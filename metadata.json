@@ -1,0 +1,6 @@
+{
+  "name": "Join Bajrang Dal",
+  "description": "Mobile-first QR registration, offline-ready Admin PWA, WhatsApp notification, and multi-admin management system for Join Bajrang Dal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
