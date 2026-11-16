@@ -791,8 +791,8 @@ async function startServer() {
           }
           let body = Buffer.concat(chunks).toString('utf8');
           body = body.replace(
-            'transport.connect(createHMRHandler(handleMessage));',
-            '/* HMR WebSocket disabled in preview */'
+            /new WebSocket\([^)]*\)/g,
+            '({ OPEN: 1, readyState: 1, addEventListener() {}, removeEventListener() {}, send() {}, close() {} })'
           );
           res.removeHeader('Content-Length');
           res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
