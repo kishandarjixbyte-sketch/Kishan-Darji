@@ -1,5 +1,12 @@
-import crypto from 'node:crypto';
-import { sqlite, type AdminRecord, type RegistrationRecord, mirrorToSupabase } from './db.ts';
+import {
+  getAdminByIdRaw,
+  getEnabledAlertSuperAdmins,
+  getNotificationLogEntry,
+  getNotificationSettings,
+  saveNotificationLogEntry,
+  type DeliveryStatus,
+  type RegistrationRecord,
+} from './db.ts';
 
 export function normalizeWhatsAppNumber(input: string): string {
   const digits = input.replace(/\D/g, '');
@@ -33,7 +40,7 @@ export function buildRegistrationWhatsAppMessage(
 
 interface NotificationDispatchResult {
   recipient: string;
-  status: 'sent' | 'failed' | 'skipped_disabled' | 'queued_unconfigured';
+  status: DeliveryStatus;
   providerMessageId?: string;
   error?: string;
 }
@@ -42,28 +49,20 @@ export async function dispatchRegistrationNotifications(
   reg: RegistrationRecord,
   dashboardUrl: string
 ): Promise<NotificationDispatchResult[]> {
-  const settings = sqlite
-    .prepare('SELECT global_enabled, extra_whatsapp_numbers FROM notification_settings WHERE id = 1')
-    .get() as { global_enabled: number; extra_whatsapp_numbers: string } | undefined;
-
-  const globalEnabled = settings ? settings.global_enabled === 1 : true;
-  const extraNumbers: string[] = settings ? JSON.parse(settings.extra_whatsapp_numbers || '[]') : [];
+  const settings = await getNotificationSettings();
+  const globalEnabled = settings.global_enabled;
+  const extraNumbers = settings.extra_whatsapp_numbers;
 
   const recipients = new Map<string, string | null>();
 
   if (reg.assigned_admin_id) {
-    const assigned = sqlite
-      .prepare('SELECT * FROM admins WHERE id = ? AND is_active = 1')
-      .get(reg.assigned_admin_id) as AdminRecord | undefined;
-    if (assigned && assigned.notifications_enabled === 1 && assigned.whatsapp_number) {
+    const assigned = await getAdminByIdRaw(reg.assigned_admin_id);
+    if (assigned && assigned.is_active === 1 && assigned.notifications_enabled === 1 && assigned.whatsapp_number) {
       recipients.set(normalizeWhatsAppNumber(assigned.whatsapp_number), assigned.id);
     }
   }
 
-  const enabledAdmins = sqlite
-    .prepare('SELECT * FROM admins WHERE is_active = 1 AND notifications_enabled = 1 AND (role = ? OR is_primary = 1)')
-    .all('super_admin') as unknown as AdminRecord[];
-
+  const enabledAdmins = await getEnabledAlertSuperAdmins();
   for (const adm of enabledAdmins) {
     if (adm.whatsapp_number) {
       const normalized = normalizeWhatsAppNumber(adm.whatsapp_number);
@@ -87,16 +86,12 @@ export async function dispatchRegistrationNotifications(
   const results: NotificationDispatchResult[] = [];
 
   for (const [recipient, adminId] of recipients.entries()) {
-    // Prevent duplicate notification for same registration & recipient
-    const existing = sqlite
-      .prepare('SELECT id, delivery_status FROM notification_logs WHERE registration_id = ? AND recipient_whatsapp = ?')
-      .get(reg.id, recipient) as { id: string; delivery_status: string } | undefined;
-
+    const existing = await getNotificationLogEntry(reg.id, recipient);
     if (existing && existing.delivery_status === 'sent') {
       continue;
     }
 
-    let status: NotificationDispatchResult['status'] = 'queued_unconfigured';
+    let status: DeliveryStatus = 'queued_unconfigured';
     let providerMessageId: string | undefined;
     let errorMessage: string | undefined;
 
@@ -143,29 +138,15 @@ export async function dispatchRegistrationNotifications(
       errorMessage = 'WhatsApp Cloud API credentials not configured in environment';
     }
 
-    const logId = existing?.id || crypto.randomUUID();
-    if (existing) {
-      sqlite.prepare(`
-        UPDATE notification_logs
-        SET delivery_status = ?, provider_message_id = ?, error_message = ?, message_preview = ?, created_at = ?
-        WHERE id = ?
-      `).run(status, providerMessageId ?? null, errorMessage ?? null, messageText, new Date().toISOString(), logId);
-    } else {
-      sqlite.prepare(`
-        INSERT INTO notification_logs (id, registration_id, admin_id, recipient_whatsapp, message_preview, provider_message_id, delivery_status, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(logId, reg.id, adminId, recipient, messageText, providerMessageId ?? null, status, errorMessage ?? null);
-    }
-
-    void mirrorToSupabase('notification_logs', {
-      id: logId,
-      registration_id: reg.id,
-      admin_id: adminId,
-      recipient_whatsapp: recipient,
-      message_preview: messageText,
-      provider_message_id: providerMessageId ?? null,
-      delivery_status: status,
-      error_message: errorMessage ?? null,
+    await saveNotificationLogEntry({
+      existingId: existing?.id,
+      registrationId: reg.id,
+      adminId,
+      recipientWhatsapp: recipient,
+      messagePreview: messageText,
+      providerMessageId,
+      deliveryStatus: status,
+      errorMessage,
     });
 
     results.push({ recipient, status, providerMessageId, error: errorMessage });

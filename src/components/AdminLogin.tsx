@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, Loader2, AlertCircle, KeyRound, ChevronDown, ChevronUp } from 'lucide-react';
 import type { AdminUser } from '../types';
+import { apiJson } from '../lib/apiClient';
 
 interface Props {
   onSuccess: (token: string, admin: AdminUser) => void;
@@ -23,19 +24,18 @@ export const AdminLogin: React.FC<Props> = ({ onSuccess }) => {
 
     setLoading(true);
     try {
-      const res = await fetch('/api/auth/login', {
+      const data = await apiJson<{ token: string; admin: AdminUser }>('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifier: identifier.trim(), password }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Authentication failed.');
-        return;
-      }
       onSuccess(data.token, data.admin);
-    } catch {
-      setError('Unable to reach server. Please verify your internet connection.');
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Authentication failed. Please try again.'
+      );
     } finally {
       setLoading(false);
     }

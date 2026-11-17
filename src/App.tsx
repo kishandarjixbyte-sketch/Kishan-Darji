@@ -10,6 +10,7 @@ import { SetupGuide } from './components/SetupGuide';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { wipeLocalAdminVault } from './lib/encryptedDb';
+import { buildApiUrl } from './lib/apiClient';
 
 type ViewMode = 'register' | 'qr' | 'admin' | 'guide';
 
@@ -46,11 +47,14 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
-    fetch('/api/auth/me', {
+    fetch(buildApiUrl('/api/auth/me'), {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {
-        if (!res.ok) throw new Error('Expired');
+        if (res.status === 401 || res.status === 403) {
+          throw new Error('Unauthorized');
+        }
+        if (!res.ok) throw new Error('ServerError');
         return res.json();
       })
       .then((data) => {

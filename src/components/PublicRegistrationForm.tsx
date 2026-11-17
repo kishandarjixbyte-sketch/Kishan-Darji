@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { CheckCircle2, AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
 import type { Language, OccupationType } from '../types';
 import { getTranslations } from '../lib/i18n';
+import { apiJson } from '../lib/apiClient';
 import emblemImg from '../assets/images/organization_emblem_1794820507112.jpg';
 
 interface Props {
@@ -120,7 +121,7 @@ export const PublicRegistrationForm: React.FC<Props> = ({ lang, onChangeLang, so
 
     setSubmitting(true);
     try {
-      const response = await fetch('/api/registrations', {
+      const data = await apiJson<{ registration: SubmissionReceipt }>('/api/registrations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -136,16 +137,14 @@ export const PublicRegistrationForm: React.FC<Props> = ({ lang, onChangeLang, so
         }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        setErrorMsg(data.error || 'Submission failed. Please check your details.');
-        return;
-      }
-
       setReceipt(data.registration);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch {
-      setErrorMsg('Network unavailable. Please ensure internet connection to submit a new registration.');
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Submission failed. Please check your details and try again.';
+      setErrorMsg(msg);
     } finally {
       setSubmitting(false);
     }

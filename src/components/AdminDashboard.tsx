@@ -44,6 +44,7 @@ import {
   saveAuthorizedRegistrationsEncrypted,
 } from '../lib/encryptedDb';
 import { exportRegistrationsToCsv, exportRegistrationsToExcel } from '../lib/exportUtils';
+import { apiJson, buildApiUrl } from '../lib/apiClient';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface Props {
@@ -153,7 +154,7 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
       const deviceId = await getDeviceId();
       const pending = await getPendingMutations(currentAdmin.id);
 
-      const syncRes = await fetch('/api/registrations/sync', {
+      const syncRes = await fetch(buildApiUrl('/api/registrations/sync'), {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
@@ -187,14 +188,14 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
         await loadLocalVault();
       }
 
-      const adminsRes = await fetch('/api/admins', { headers: authHeaders });
+      const adminsRes = await fetch(buildApiUrl('/api/admins'), { headers: authHeaders });
       if (adminsRes.ok) {
         const adminsData = await adminsRes.json();
         setAdmins(adminsData.admins || []);
       }
 
       if (isSuper) {
-        const notifRes = await fetch('/api/settings/notifications', { headers: authHeaders });
+        const notifRes = await fetch(buildApiUrl('/api/settings/notifications'), { headers: authHeaders });
         if (notifRes.ok) {
           const nd = await notifRes.json();
           setGlobalNotifyEnabled(Boolean(nd.global_enabled));
@@ -301,33 +302,35 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
             follow_up_notes: editForm.follow_up_notes,
           };
 
-      const res = await fetch(`/api/registrations/${selectedReg.id}`, {
+      await apiJson(`/api/registrations/${selectedReg.id}`, {
         method: 'PATCH',
         headers: authHeaders,
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setBannerMsg({ type: 'error', text: data.error || 'Failed to update registration.' });
-      } else {
-        await syncWithServer();
-        setSelectedReg(null);
-        setBannerMsg({ type: 'success', text: 'Registration updated and synchronized.' });
-      }
-    } catch {
-      await queueOfflineMutation({
-        id: selectedReg.id,
-        adminId: currentAdmin.id,
-        status: editForm.status,
-        follow_up_notes: editForm.follow_up_notes,
-        updated_at: now,
-      });
-      await loadLocalVault();
+      await syncWithServer();
       setSelectedReg(null);
-      setBannerMsg({
-        type: 'success',
-        text: 'Saved offline in encrypted phone storage (Pending Sync).',
-      });
+      setBannerMsg({ type: 'success', text: 'Registration updated and synchronized.' });
+    } catch (err) {
+      if (!navigator.onLine) {
+        await queueOfflineMutation({
+          id: selectedReg.id,
+          adminId: currentAdmin.id,
+          status: editForm.status,
+          follow_up_notes: editForm.follow_up_notes,
+          updated_at: now,
+        });
+        await loadLocalVault();
+        setSelectedReg(null);
+        setBannerMsg({
+          type: 'success',
+          text: 'Saved offline in encrypted phone storage (Pending Sync).',
+        });
+      } else {
+        setBannerMsg({
+          type: 'error',
+          text: err instanceof Error ? err.message : 'Failed to update registration.',
+        });
+      }
     } finally {
       setSavingEdit(false);
     }
@@ -336,17 +339,18 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     try {
-      const res = await fetch(`/api/registrations/${deleteTarget.id}`, {
+      await apiJson(`/api/registrations/${deleteTarget.id}`, {
         method: 'DELETE',
         headers: authHeaders,
       });
-      if (res.ok) {
-        setDeleteTarget(null);
-        await syncWithServer();
-        setBannerMsg({ type: 'success', text: 'Registration deleted permanently.' });
-      }
-    } catch {
-      setBannerMsg({ type: 'error', text: 'Deletion requires an active internet connection.' });
+      setDeleteTarget(null);
+      await syncWithServer();
+      setBannerMsg({ type: 'success', text: 'Registration deleted permanently.' });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Deletion requires an active internet connection.',
+      });
     }
   };
 
@@ -381,26 +385,24 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
     setBackupBusy(true);
     try {
       const decrypted = await decryptBackupBundle(restorePassphrase, restoreFileText);
-      const res = await fetch('/api/backup/restore', {
+      const data = await apiJson<{ restored: number }>('/api/backup/restore', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({ records: decrypted.records }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setBannerMsg({ type: 'error', text: data.error || 'Restore failed.' });
-      } else {
-        await syncWithServer();
-        setShowBackupModal(false);
-        setRestorePassphrase('');
-        setRestoreFileText('');
-        setBannerMsg({
-          type: 'success',
-          text: `Backup restored cleanly (${data.restored} new records recovered).`,
-        });
-      }
-    } catch {
-      setBannerMsg({ type: 'error', text: 'Decryption failed: incorrect passphrase or corrupted backup file.' });
+      await syncWithServer();
+      setShowBackupModal(false);
+      setRestorePassphrase('');
+      setRestoreFileText('');
+      setBannerMsg({
+        type: 'success',
+        text: `Backup restored cleanly (${data.restored} new records recovered).`,
+      });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Decryption failed: incorrect passphrase or corrupted backup file.',
+      });
     } finally {
       setBackupBusy(false);
     }
@@ -446,38 +448,40 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
         ...adminForm,
         password: adminForm.password || undefined,
       };
-      const res = await fetch(url, {
+      await apiJson(url, {
         method,
         headers: authHeaders,
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setBannerMsg({ type: 'error', text: data.error || 'Failed to save admin.' });
-      } else {
-        setShowAdminModal(false);
-        await syncWithServer();
-        setBannerMsg({
-          type: 'success',
-          text: editingAdmin ? 'Administrator updated.' : 'New administrator added.',
-        });
-      }
+      setShowAdminModal(false);
+      await syncWithServer();
+      setBannerMsg({
+        type: 'success',
+        text: editingAdmin ? 'Administrator updated.' : 'New administrator added.',
+      });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to save admin.',
+      });
     } finally {
       setAdminSaving(false);
     }
   };
 
   const handleDeleteAdmin = async (adm: AdminUser) => {
-    const res = await fetch(`/api/admins/${adm.id}`, {
-      method: 'DELETE',
-      headers: authHeaders,
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setBannerMsg({ type: 'error', text: data.error || 'Unable to remove admin.' });
-    } else {
+    try {
+      await apiJson(`/api/admins/${adm.id}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
       await syncWithServer();
       setBannerMsg({ type: 'success', text: 'Administrator removed.' });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to remove admin.',
+      });
     }
   };
 
@@ -488,7 +492,7 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      const res = await fetch('/api/settings/notifications', {
+      await apiJson('/api/settings/notifications', {
         method: 'PUT',
         headers: authHeaders,
         body: JSON.stringify({
@@ -496,23 +500,31 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
           extra_whatsapp_numbers,
         }),
       });
-      if (res.ok) {
-        await syncWithServer();
-        setBannerMsg({ type: 'success', text: 'WhatsApp notification settings updated.' });
-      }
+      await syncWithServer();
+      setBannerMsg({ type: 'success', text: 'WhatsApp notification settings updated.' });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to save WhatsApp notification settings.',
+      });
     } finally {
       setSavingNotifySettings(false);
     }
   };
 
   const handleRetryNotification = async (registrationId: string) => {
-    const res = await fetch(`/api/notifications/${registrationId}/resend`, {
-      method: 'POST',
-      headers: authHeaders,
-    });
-    if (res.ok) {
+    try {
+      await apiJson(`/api/notifications/${registrationId}/resend`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
       await syncWithServer();
       setBannerMsg({ type: 'success', text: 'WhatsApp notification re-dispatched.' });
+    } catch (err) {
+      setBannerMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to re-dispatch WhatsApp notification.',
+      });
     }
   };
 
