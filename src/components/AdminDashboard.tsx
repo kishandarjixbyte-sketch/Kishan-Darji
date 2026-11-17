@@ -215,14 +215,34 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
   }, [authHeaders, currentAdmin.id, isSuper, loadLocalVault]);
 
   useEffect(() => {
-    void loadLocalVault().then(() => syncWithServer());
-  }, [loadLocalVault, syncWithServer]);
+    void loadLocalVault().finally(() => {
+      if (!navigator.onLine) {
+        setLoading(false);
+      }
+    });
+  }, [loadLocalVault]);
 
-  // Auto-sync when connectivity returns
+  // Auto-sync when online, when tab regains focus, or every 25s
   useEffect(() => {
-    if (isOnline) {
-      void syncWithServer();
-    }
+    if (!isOnline) return;
+    void syncWithServer();
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void syncWithServer();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const interval = window.setInterval(() => {
+      if (navigator.onLine) {
+        void syncWithServer();
+      }
+    }, 25000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(interval);
+    };
   }, [isOnline, syncWithServer]);
 
   const stats = useMemo(() => {
@@ -552,6 +572,10 @@ export const AdminDashboard: React.FC<Props> = ({ lang, token, currentAdmin }) =
                 {pendingSyncCount > 0
                   ? `${pendingSyncCount} ${t.pendingSyncStatus}`
                   : t.syncedStatus}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-emerald-700 font-medium">
+                Phone Vault: {registrations.length} saved
               </span>
               {lastSyncTime && (
                 <>

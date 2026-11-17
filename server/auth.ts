@@ -14,12 +14,13 @@ function getSessionSecret(): string {
     return cachedSecret;
   }
 
-  // On stateless serverless (e.g. Vercel), derive a consistent HMAC secret from SUPABASE_SERVICE_ROLE_KEY
+  // On stateless serverless (e.g. Vercel), derive a consistent HMAC secret from SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY
   // so multiple serverless instances verify the same admin tokens if SESSION_SECRET wasn't explicitly set.
-  if (isVercelRuntime() && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+  if (isVercelRuntime() && supabaseKey) {
     cachedSecret = crypto
       .createHash('sha256')
-      .update(`${process.env.SUPABASE_SERVICE_ROLE_KEY}:join-bajrang-dal-session-v1`)
+      .update(`${supabaseKey}:join-bajrang-dal-session-v1`)
       .digest('hex');
     return cachedSecret;
   }

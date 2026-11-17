@@ -21,9 +21,9 @@ export default function App() {
   const [lang, setLang] = useState<Language>('en');
   const [view, setView] = useState<ViewMode>('register');
   const [source, setSource] = useState<'qr_code' | 'direct_link'>('direct_link');
-  const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_KEY));
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [currentAdmin, setCurrentAdmin] = useState<AdminUser | null>(() => {
-    const raw = sessionStorage.getItem(ADMIN_KEY);
+    const raw = localStorage.getItem(ADMIN_KEY);
     if (!raw) return null;
     try {
       return JSON.parse(raw) as AdminUser;
@@ -60,13 +60,13 @@ export default function App() {
       .then((data) => {
         if (data.admin) {
           setCurrentAdmin(data.admin);
-          sessionStorage.setItem(ADMIN_KEY, JSON.stringify(data.admin));
+          localStorage.setItem(ADMIN_KEY, JSON.stringify(data.admin));
         }
       })
-      .catch(() => {
-        if (navigator.onLine) {
-          sessionStorage.removeItem(TOKEN_KEY);
-          sessionStorage.removeItem(ADMIN_KEY);
+      .catch((err) => {
+        if (err instanceof Error && err.message === 'Unauthorized') {
+          localStorage.removeItem(TOKEN_KEY);
+          localStorage.removeItem(ADMIN_KEY);
           setToken(null);
           setCurrentAdmin(null);
         }
@@ -74,16 +74,16 @@ export default function App() {
   }, [token]);
 
   const handleLoginSuccess = (newToken: string, admin: AdminUser) => {
-    sessionStorage.setItem(TOKEN_KEY, newToken);
-    sessionStorage.setItem(ADMIN_KEY, JSON.stringify(admin));
+    localStorage.setItem(TOKEN_KEY, newToken);
+    localStorage.setItem(ADMIN_KEY, JSON.stringify(admin));
     setToken(newToken);
     setCurrentAdmin(admin);
     setView('admin');
   };
 
   const handleSignOut = async () => {
-    sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(ADMIN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ADMIN_KEY);
     setToken(null);
     setCurrentAdmin(null);
     await wipeLocalAdminVault();

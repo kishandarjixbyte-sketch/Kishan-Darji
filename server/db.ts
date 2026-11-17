@@ -93,10 +93,25 @@ export class DatabaseError extends Error {
   }
 }
 
+export function resolveSupabaseEnv(): { baseUrl: string; serviceKey: string } {
+  const baseUrl = (
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ''
+  )
+    .trim()
+    .replace(/\/$/, '');
+  const serviceKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    ''
+  ).trim();
+  return { baseUrl, serviceKey };
+}
+
 export function isSupabaseConfigured(): boolean {
-  const url = process.env.SUPABASE_URL?.trim();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  return Boolean(url && key && url.startsWith('http'));
+  const { baseUrl, serviceKey } = resolveSupabaseEnv();
+  return Boolean(baseUrl && serviceKey && baseUrl.startsWith('http'));
 }
 
 export function isVercelRuntime(): boolean {
@@ -181,11 +196,10 @@ function normalizeRegistrationRow(
 // SUPABASE REST CLIENT (Works seamlessly on Vercel Serverless, Render, Local)
 // ============================================================================
 function getSupabaseConfig(): { baseUrl: string; serviceKey: string } {
-  const baseUrl = process.env.SUPABASE_URL?.trim().replace(/\/$/, '') || '';
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || '';
+  const { baseUrl, serviceKey } = resolveSupabaseEnv();
   if (!baseUrl || !serviceKey) {
     throw new DatabaseError(
-      'Database is not configured on Vercel. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel Environment Variables and run supabase/schema.sql.',
+      'Database is not configured on Vercel. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) in Vercel Environment Variables and run supabase/schema.sql.',
       503
     );
   }
@@ -203,9 +217,13 @@ async function supabaseFetch<T = unknown>(
   const { baseUrl, serviceKey } = getSupabaseConfig();
   const headers: Record<string, string> = {
     apikey: serviceKey,
-    Authorization: `Bearer ${serviceKey}`,
     'Content-Type': 'application/json',
   };
+  // Legacy JWT service_role keys require Authorization: Bearer <jwt>;
+  // New sb_secret_* keys authenticate directly via apikey header.
+  if (!serviceKey.startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${serviceKey}`;
+  }
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
