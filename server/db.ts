@@ -427,16 +427,6 @@ const DEFAULT_SEED_ADMINS = [
     notifications_enabled: true,
     password: 'Admin@2026',
   },
-  {
-    full_name: 'Vikram Desai (Sub Admin)',
-    email: 'subadmin@bajrangdal.org',
-    mobile: '9825011223',
-    whatsapp_number: '919825011223',
-    role: 'sub_admin' as AdminRole,
-    is_primary: false,
-    notifications_enabled: false,
-    password: 'SubAdmin@2026',
-  },
 ];
 
 let seedPromise: Promise<void> | null = null;
@@ -501,6 +491,12 @@ export async function ensureInitialized(): Promise<void> {
           });
         }
       }
+      // Remove legacy testing Sub Admin account if previously seeded
+      if (existingAdmins.some((a) => a.email.toLowerCase() === 'subadmin@bajrangdal.org' && a.mobile === '9825011223')) {
+        await supabaseFetch("admins?email=eq.subadmin%40bajrangdal.org&mobile=eq.9825011223", {
+          method: 'DELETE',
+        });
+      }
       return;
     }
 
@@ -508,6 +504,9 @@ export async function ensureInitialized(): Promise<void> {
     const sqlite = await getSqlite();
     sqlite
       .prepare("UPDATE admins SET is_primary = 0, notifications_enabled = 0 WHERE mobile = '9876543210' AND email = 'superadmin@bajrangdal.org'")
+      .run();
+    sqlite
+      .prepare("DELETE FROM admins WHERE LOWER(email) = 'subadmin@bajrangdal.org' AND mobile = '9825011223'")
       .run();
 
     for (const seed of DEFAULT_SEED_ADMINS) {
