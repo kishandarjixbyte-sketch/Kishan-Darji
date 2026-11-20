@@ -4,18 +4,15 @@ import {
   UserPlus,
   Calendar,
   BookOpen,
-  ShieldCheck,
   Sun,
   Moon,
   QrCode,
-  AlertCircle,
 } from 'lucide-react';
 import type {
   AdminUser,
   EventItem,
   Language,
   OrganizationPageItem,
-  PublicMemberVerification,
   ThemeSettings,
 } from './types';
 import { getTranslations } from './lib/i18n';
@@ -29,7 +26,6 @@ import { OrganizationInfoPages } from './components/OrganizationInfoPages';
 import { QrCodeStudio } from './components/QrCodeStudio';
 import { AdminLogin } from './components/AdminLogin';
 import { AdminDashboard, type DashboardTab } from './components/AdminDashboard';
-import { MemberIdCardModal } from './components/MemberIdCardModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
@@ -61,8 +57,6 @@ export default function App() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [orgPages, setOrgPages] = useState<OrganizationPageItem[]>([]);
   const [themeSettings, setThemeSettings] = useState<ThemeSettings | null>(null);
-  const [verifiedMember, setVerifiedMember] = useState<PublicMemberVerification | null>(null);
-  const [verifyError, setVerifyError] = useState('');
 
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [currentAdmin, setCurrentAdmin] = useState<AdminUser | null>(() => {
@@ -113,21 +107,6 @@ export default function App() {
     }
   }, []);
 
-  const lookupMemberVerification = useCallback(async (code: string) => {
-    setVerifyError('');
-    try {
-      const res = await fetch(buildApiUrl(`/api/members/verify?code=${encodeURIComponent(code)}`));
-      const data = await res.json();
-      if (!res.ok) {
-        setVerifyError(data.error || 'Member ID not found.');
-        return;
-      }
-      setVerifiedMember(data.member);
-    } catch {
-      setVerifyError('Unable to verify Member ID right now.');
-    }
-  }, []);
-
   useEffect(() => {
     void loadPublicPlatformData();
   }, [loadPublicPlatformData]);
@@ -137,15 +116,12 @@ export default function App() {
     const v = params.get('view');
     const src = params.get('source');
     const evSlug = params.get('event');
-    const verifyCode = params.get('verify');
     const orgSlug = params.get('org');
 
     if (src === 'qr_code') setSource('qr_code');
     if (evSlug) {
       setSelectedEventSlug(evSlug);
       setView('events');
-    } else if (verifyCode) {
-      void lookupMemberVerification(verifyCode);
     } else if (orgSlug === 'bajrang_dal' || orgSlug === 'vhp' || orgSlug === 'durga_vahini') {
       setSelectedOrgSlug(orgSlug);
       setView('about');
@@ -162,7 +138,7 @@ export default function App() {
     } else if (v === 'register') {
       setView('join-bajrang-dal');
     }
-  }, [lookupMemberVerification]);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -195,14 +171,9 @@ export default function App() {
     extra?: {
       orgSlug?: 'bajrang_dal' | 'vhp' | 'durga_vahini';
       eventSlug?: string | null;
-      verifyCode?: string;
       adminTab?: DashboardTab;
     }
   ) => {
-    if (extra?.verifyCode) {
-      void lookupMemberVerification(extra.verifyCode);
-      return;
-    }
     if (extra?.orgSlug) setSelectedOrgSlug(extra.orgSlug);
     if (extra?.eventSlug !== undefined) setSelectedEventSlug(extra.eventSlug);
     else if (next !== 'events') setSelectedEventSlug(null);
@@ -346,18 +317,6 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 pb-24 lg:pb-12">
-        {verifyError && (
-          <div className="mb-5 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm text-amber-900 dark:text-amber-200 flex items-center justify-between gap-3">
-            <span className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{verifyError}</span>
-            </span>
-            <button type="button" onClick={() => setVerifyError('')} className="underline text-xs cursor-pointer">
-              Dismiss
-            </button>
-          </div>
-        )}
-
         {view === 'home' && (
           <HomeView
             lang={lang}
@@ -368,7 +327,6 @@ export default function App() {
               navigate(next, {
                 orgSlug: extra?.orgSlug,
                 eventSlug: extra?.eventSlug,
-                verifyCode: extra?.verifyCode,
                 adminTab: next === 'admin' ? 'events' : undefined,
               })
             }
@@ -493,19 +451,6 @@ export default function App() {
           })}
         </div>
       </nav>
-
-      {/* Public Digital Member Verification Modal (?verify=CODE) */}
-      {verifiedMember && (
-        <MemberIdCardModal
-          member={verifiedMember}
-          onClose={() => {
-            setVerifiedMember(null);
-            const url = new URL(window.location.href);
-            url.searchParams.delete('verify');
-            window.history.replaceState({}, '', url.toString());
-          }}
-        />
-      )}
 
       <OfflineIndicator />
     </div>

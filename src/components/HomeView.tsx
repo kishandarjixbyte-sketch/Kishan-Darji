@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Shield,
   CalendarPlus,
@@ -6,11 +6,9 @@ import {
   MapPin,
   Users,
   ArrowRight,
-  Search,
   BookOpen,
   CheckCircle2,
   Sparkles,
-  QrCode,
 } from 'lucide-react';
 import type { EventItem, FestivalThemeId, Language, ThemeSettings } from '../types';
 import { getTranslations } from '../lib/i18n';
@@ -44,7 +42,6 @@ export const HomeView: React.FC<Props> = ({
   isAdminSession,
 }) => {
   const t = getTranslations(lang);
-  const [verifyInput, setVerifyInput] = useState('');
 
   const effectiveThemeId: FestivalThemeId =
     themeSettings?.effective_theme || themeSettings?.active_theme || 'normal';
@@ -52,13 +49,6 @@ export const HomeView: React.FC<Props> = ({
   const activeBannerText = themeSettings?.custom_banner_text?.trim() || themeConfig.bannerText;
 
   const upcomingEvents = events.slice(0, 3);
-
-  const handleVerifyLookup = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = verifyInput.trim();
-    if (!cleaned) return;
-    onNavigate('home' as never, { verifyCode: cleaned });
-  };
 
   return (
     <div className="space-y-10">
@@ -104,31 +94,6 @@ export const HomeView: React.FC<Props> = ({
                 {t.heroSubtitle}
               </p>
             </div>
-
-            {/* Member ID Quick Verification Search */}
-            <form
-              onSubmit={handleVerifyLookup}
-              className="flex flex-col sm:flex-row gap-2.5 pt-2 max-w-xl"
-            >
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={verifyInput}
-                  onChange={(e) => setVerifyInput(e.target.value)}
-                  placeholder="Verify Member ID (e.g. JBD-2026-100145)"
-                  aria-label="Verify Member ID"
-                  className="w-full min-h-[44px] rounded-xl border border-slate-300 dark:border-slate-700 bg-[#FAF9F6] dark:bg-slate-800 pl-10 pr-4 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:border-orange-600 focus:outline-none"
-                />
-              </div>
-              <button
-                type="submit"
-                className="min-h-[44px] px-5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 text-white text-sm font-semibold hover:bg-slate-800 dark:hover:bg-slate-600 transition-colors inline-flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
-              >
-                <QrCode className="w-4 h-4" />
-                <span>Verify Digital ID</span>
-              </button>
-            </form>
           </div>
 
           <div className="lg:col-span-5 relative min-h-[240px] lg:min-h-full bg-slate-100 dark:bg-slate-800">
@@ -387,9 +352,9 @@ export const HomeView: React.FC<Props> = ({
         <div className="flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
           <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">QR-Verified Digital ID Card</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Confirmation Message Only</h3>
             <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
-              Approved members receive a downloadable PDF identity card with live QR verification.
+              Members receive an official registration reference and confirmation message—no Digital ID cards are issued.
             </p>
           </div>
         </div>

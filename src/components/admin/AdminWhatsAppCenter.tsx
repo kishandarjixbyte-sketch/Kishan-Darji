@@ -44,7 +44,7 @@ const PREVIEW_TEMPLATES: Record<WhatsAppLanguage, Record<WhatsAppTemplateType, s
     event_announcement:
       'જય શ્રી રામ {name},\n{wing} દ્વારા નવો કાર્યક્રમ જાહેર કરવામાં આવ્યો છે:\nકાર્યક્રમ: {event_title}\nતારીખ: {event_date}\nસ્થળ: {venue}\n\nવધુ વિગતો માટે સત્તાવાર પોર્ટલની મુલાકાત લો.',
     registration_confirmation:
-      'નમસ્તે {name},\n{wing} માં તમારી નોંધણી સફળતાપૂર્વક પ્રાપ્ત થઈ છે.\nરજીસ્ટ્રેશન ID: {code}\nચકાસણી પછી તમારું ડિજિટલ મેમ્બરશિપ કાર્ડ સક્રિય થશે.',
+      'નમસ્તે {name},\n{wing} માં તમારી નોંધણી સફળતાપૂર્વક પ્રાપ્ત થઈ છે.\nરજીસ્ટ્રેશન નંબર: {code}\nતમારા સભ્યપદ અંગેની આગળની પુષ્ટિ અને સૂચના તમને WhatsApp સંદેશ દ્વારા મળશે.',
     event_reminder:
       'સ્મૃતિ સંદેશ – {name},\nઆગામી કાર્યક્રમ "{event_title}" માં તમારી હાજરી અપેક્ષિત છે.\nતારીખ: {event_date}\nસ્થળ: {venue}',
     membership_update:
@@ -55,18 +55,18 @@ const PREVIEW_TEMPLATES: Record<WhatsAppLanguage, Record<WhatsAppTemplateType, s
     event_announcement:
       'जय श्री राम {name},\n{wing} द्वारा आगामी कार्यक्रम की सूचना:\nकार्यक्रम: {event_title}\nदिनांक: {event_date}\nस्थान: {venue}\n\nअधिक जानकारी के लिए आधिकारिक पोर्टल देखें।',
     registration_confirmation:
-      'नमस्ते {name},\n{wing} में आपका पंजीकरण सफलतापूर्वक दर्ज कर लिया गया है।\nपंजीकरण ID: {code}\nसत्यापन पूर्ण होने पर आपका डिजिटल सदस्यता कार्ड सक्रिय हो जाएगा।',
+      'नमस्ते {name},\n{wing} में आपका पंजीकरण सफलतापूर्वक दर्ज कर लिया गया है।\nपंजीकरण क्रमांक: {code}\nआपके पंजीकरण की आगे की पुष्टि और सूचना WhatsApp संदेश द्वारा भेजी जाएगी।',
     event_reminder:
       'स्मरण सूचना – {name},\nआगामी कार्यक्रम "{event_title}" के लिए अनुस्मारक:\nदिनांक: {event_date}\nस्थान: {venue}',
     membership_update:
-      'जय श्री राम {name},\n{wing} सदस्यता आवेदन ({code}) की अद्यतन स्थिति पोर्टल पर उपलब्ध है।',
+      'जय श्री राम {name},\n{wing} सदस्यता आवेदन ({code}) की अद्यतन स्थिति अपडेट कर दी गई है।',
     custom: '',
   },
   en: {
     event_announcement:
       'Namaste {name},\n{wing} invites you to an upcoming program:\nEvent: {event_title}\nDate: {event_date}\nVenue: {venue}\n\nPlease visit the official portal for details.',
     registration_confirmation:
-      'Namaste {name},\nYour registration with {wing} has been received successfully.\nRegistration ID: {code}\nYour Digital Identity Card activates upon verification.',
+      'Namaste {name},\nYour registration with {wing} has been received successfully.\nReference ID: {code}\nYou will receive further membership confirmation updates directly via message.',
     event_reminder:
       'Event Reminder – {name},\nThis is a reminder for "{event_title}".\nDate: {event_date}\nVenue: {venue}',
     membership_update:

@@ -878,7 +878,7 @@ export const AdminDashboard: React.FC<Props> = ({
                               <button
                                 type="button"
                                 onClick={() => setIdCardMember(reg)}
-                                title="Digital ID Card & Private Verification Doc"
+                                title="View Member Profile & Private ID Doc"
                                 className="p-2 rounded-lg text-orange-700 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-950/40 cursor-pointer"
                               >
                                 <BadgeCheck className="w-4 h-4" />
@@ -1101,7 +1101,7 @@ export const AdminDashboard: React.FC<Props> = ({
         </div>
       )}
 
-      {/* DIGITAL ID CARD + PRIVATE DOC INSPECTOR */}
+      {/* ADMIN MEMBER RECORD + PRIVATE DOC INSPECTOR */}
       {idCardMember && (
         <MemberIdCardModal
           member={idCardMember}

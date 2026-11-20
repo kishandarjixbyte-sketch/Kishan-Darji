@@ -17,7 +17,7 @@ export const TRANSLATIONS = {
     heroKicker: 'Vishva Hindu Parishad · Bajrang Dal · Durga Vahini',
     heroTitle: 'Seva, Suraksha & Sanskar — Official Organization & Event Platform',
     heroSubtitle:
-      'Join Bajrang Dal or Durga Vahini through dedicated membership portals, register for upcoming cultural and community service events, or verify official Digital Member ID cards.',
+      'Join Bajrang Dal or Durga Vahini through dedicated membership portals or register for upcoming cultural and community service events.',
     ctaJoinBajrangDal: 'Join Bajrang Dal',
     ctaJoinBajrangDalSub: 'Youth & Men’s Wing Membership Registration (18+ Years)',
     ctaJoinDurgaVahini: 'Join Durga Vahini',
@@ -50,7 +50,7 @@ export const TRANSLATIONS = {
     pincodeLabel: 'Pincode *',
     educationLabel: 'Education *',
     occupationLabel: 'Occupation *',
-    photoLabel: 'Profile Photo (JPG / PNG, recommended for Digital ID Card)',
+    photoLabel: 'Profile Photo (JPG / PNG, for organization records)',
     idDocLabel: 'Identity Document Upload (Aadhaar / Voter ID / PAN — Strictly Private)',
     regDateLabel: 'Registration Date',
     occupations: {
@@ -66,8 +66,9 @@ export const TRANSLATIONS = {
     submitBtn: 'Submit Application',
     submittingBtn: 'Submitting Application...',
     successTitle: 'Registration Submitted Successfully',
-    successSubtitle: 'Your application is saved securely. Your Digital ID Card activates upon Admin approval.',
-    regIdLabel: 'Member Registration ID',
+    successSubtitle:
+      'Your registration has been saved. You will receive an official confirmation message only (no Digital ID card is issued).',
+    regIdLabel: 'Reference Number',
     registerAnotherBtn: 'Submit Another Registration',
     qrTitle: 'QR Code & Permanent Registration Links',
     qrSubtitle: 'Scan or share QR codes directly to Bajrang Dal, Durga Vahini, or Event portals.',
@@ -112,7 +113,7 @@ export const TRANSLATIONS = {
     heroKicker: 'વિશ્વ હિન્દુ પરિષદ · બજરંગ દળ · દુર્ગા વાહિની',
     heroTitle: 'સેવા, સુરક્ષા અને સંસ્કાર — સત્તાવાર સંગઠન અને કાર્યક્રમ પ્લેટફોર્મ',
     heroSubtitle:
-      'બજરંગ દળ અથવા દુર્ગા વાહિનીમાં અલગ સભ્યપદ નોંધણી કરો, આગામી સામાજિક કાર્યક્રમોમાં ભાગ લો અથવા ડિજિટલ મેમ્બર ID કાર્ડ ચકાસો.',
+      'બજરંગ દળ અથવા દુર્ગા વાહિનીમાં અલગ સભ્યપદ નોંધણી કરો અથવા આગામી સામાજિક અને સેવાકીય કાર્યક્રમોમાં ભાગ લો.',
     ctaJoinBajrangDal: 'Join Bajrang Dal',
     ctaJoinBajrangDalSub: 'યુવા અને પુરુષ વિભાગ સભ્યપદ નોંધણી (૧૮+ વર્ષ)',
     ctaJoinDurgaVahini: 'Join Durga Vahini',
@@ -143,7 +144,7 @@ export const TRANSLATIONS = {
     pincodeLabel: 'પિનકોડ *',
     educationLabel: 'શિક્ષણ *',
     occupationLabel: 'વ્યવસાય *',
-    photoLabel: 'પ્રોફાઈલ ફોટો (ડિજિટલ ID કાર્ડ માટે)',
+    photoLabel: 'પ્રોફાઈલ ફોટો (JPG / PNG, સંગઠન રેકોર્ડ માટે)',
     idDocLabel: 'ઓળખ દસ્તાવેજ અપલોડ (આધાર/વોટર ID — ફક્ત એડમિન માટે ખાનગી)',
     regDateLabel: 'નોંધણી તારીખ',
     occupations: {
@@ -159,8 +160,9 @@ export const TRANSLATIONS = {
     submitBtn: 'અરજી સબમિટ કરો',
     submittingBtn: 'અરજી સબમિટ થઈ રહી છે...',
     successTitle: 'નોંધણી સફળતાપૂર્વક પૂર્ણ થઈ',
-    successSubtitle: 'તમારી અરજી સુરક્ષિત રીતે નોંધાઈ ગઈ છે. એડમિન મંજૂરી પછી તમારું ID કાર્ડ સક્રિય થશે.',
-    regIdLabel: 'રજીસ્ટ્રેશન ID',
+    successSubtitle:
+      'તમારી નોંધણી સુરક્ષિત રીતે સેવ થઈ ગઈ છે. તમને ફક્ત સત્તાવાર પુષ્ટિ સંદેશ (Confirmation Message) મળશે — કોઈ ડિજિટલ ID કાર્ડ આપવામાં આવતું નથી.',
+    regIdLabel: 'નોંધણી નંબર (Ref)',
     registerAnotherBtn: 'બીજી નોંધણી કરો',
     qrTitle: 'QR કોડ અને કાયમી લિંક',
     qrSubtitle: 'આ QR કોડ સ્કેન કરો અથવા લિંક શેર કરો.',

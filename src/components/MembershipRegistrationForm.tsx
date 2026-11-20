@@ -10,6 +10,7 @@ import {
   User,
   FileCheck2,
   ArrowLeft,
+  MessageCircle,
 } from 'lucide-react';
 import type { CaptchaChallenge, Language, OccupationType, OrganizationWing } from '../types';
 import { getTranslations } from '../lib/i18n';
@@ -38,6 +39,13 @@ interface SubmissionReceipt {
   membership_status: string;
   registration_date: string;
   created_at: string;
+}
+
+interface MemberConfirmationPayload {
+  status: string;
+  recipient: string;
+  messageText: string;
+  waMeUrl: string;
 }
 
 function computeAge(dobStr: string): number {
@@ -137,6 +145,7 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [receipt, setReceipt] = useState<SubmissionReceipt | null>(null);
+  const [confirmationMsg, setConfirmationMsg] = useState<MemberConfirmationPayload | null>(null);
 
   const loadCaptcha = useCallback(async () => {
     try {
@@ -253,7 +262,10 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
 
     setSubmitting(true);
     try {
-      const data = await apiJson<{ registration: SubmissionReceipt }>('/api/registrations', {
+      const data = await apiJson<{
+        registration: SubmissionReceipt;
+        memberConfirmation?: MemberConfirmationPayload | null;
+      }>('/api/registrations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -281,9 +293,11 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
           captcha_token: captcha.token,
           captcha_answer: Number(captchaAnswer),
           source,
+          lang,
         }),
       });
       setReceipt(data.registration);
+      setConfirmationMsg(data.memberConfirmation || null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setErrorMsg(
@@ -315,6 +329,7 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
     setIdentityDocName('');
     setPrivacyConsent(false);
     setReceipt(null);
+    setConfirmationMsg(null);
     setErrorMsg('');
     void loadCaptcha();
   };
@@ -433,13 +448,32 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
                 </span>
               </div>
               <div>
-                <span className="text-xs text-slate-500 dark:text-slate-400 block">Membership Status</span>
-                <span className="font-medium text-amber-700 dark:text-amber-400">
-                  {receipt.membership_status} Approval
+                <span className="text-xs text-slate-500 dark:text-slate-400 block">Status</span>
+                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                  Confirmation Message Sent
                 </span>
               </div>
             </div>
           </div>
+
+          {confirmationMsg && (
+            <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/30 p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-emerald-900 dark:text-emerald-300 flex items-center gap-1.5">
+                  <MessageCircle className="w-4 h-4" />
+                  <span>
+                    {lang === 'gu' ? 'સત્તાવાર પુષ્ટિ સંદેશ (Confirmation Message)' : 'Official Confirmation Message'}
+                  </span>
+                </span>
+                <span className="text-[11px] font-mono text-emerald-800 dark:text-emerald-400">
+                  {confirmationMsg.status === 'sent' ? 'WhatsApp Delivered' : 'Confirmation Ready'}
+                </span>
+              </div>
+              <pre className="text-xs sm:text-sm text-slate-800 dark:text-slate-200 whitespace-pre-wrap font-sans leading-relaxed">
+                {confirmationMsg.messageText}
+              </pre>
+            </div>
+          )}
 
           <div className="flex flex-col sm:flex-row gap-3">
             <button

@@ -60,6 +60,7 @@ import {
 } from './auth.ts';
 import {
   dispatchConsentBasedCampaignMessages,
+  dispatchMemberConfirmationMessage,
   dispatchRegistrationNotifications,
   normalizeWhatsAppNumber,
   type WhatsAppLanguage,
@@ -306,17 +307,17 @@ export function createApiApp() {
   });
 
   // ==========================================================================
-  // PUBLIC MEMBER PROFILE VERIFICATION (PRIVACY-SAFE)
+  // ADMIN-ONLY MEMBER PROFILE LOOKUP (No public Digital ID cards issued)
   // ==========================================================================
-  app.get('/api/members/verify', async (req, res, next) => {
+  app.get('/api/members/verify', requireAdmin, async (req, res, next) => {
     try {
       const code = typeof req.query.code === 'string' ? req.query.code.trim() : '';
       if (!code) {
-        return res.status(400).json({ error: 'Member Registration ID is required.' });
+        return res.status(400).json({ error: 'Member Reference ID is required.' });
       }
       const member = await verifyMemberPublicByCode(code);
       if (!member) {
-        return res.status(404).json({ error: 'No member record found for this Registration ID.' });
+        return res.status(404).json({ error: 'No member record found for this Reference ID.' });
       }
       res.json({ member });
     } catch (err) {
@@ -453,9 +454,23 @@ export function createApiApp() {
       });
 
       const dashboardUrl = `${getAppBaseUrl(req)}/?view=admin`;
+      const memberLang: WhatsAppLanguage = body.lang === 'gu' || body.lang === 'hi' ? body.lang : 'en';
       let notificationResults: unknown[] = [];
+      let memberConfirmation: {
+        status: string;
+        recipient: string;
+        messageText: string;
+        waMeUrl: string;
+        error?: string;
+      } | null = null;
       try {
         notificationResults = await dispatchRegistrationNotifications(createdRecord, dashboardUrl);
+        memberConfirmation = await dispatchMemberConfirmationMessage(
+          createdRecord,
+          'registration_confirmation',
+          memberLang,
+          null
+        );
       } catch (notifyErr) {
         console.error('WhatsApp notification dispatch warning:', notifyErr);
       }
@@ -476,6 +491,7 @@ export function createApiApp() {
           registration_date: createdRecord.registration_date,
           created_at: createdRecord.created_at,
         },
+        memberConfirmation,
         notifications: notificationResults,
       });
     } catch (err) {
@@ -948,6 +964,15 @@ export function createApiApp() {
           identity_verification_status: nextIdVerifyStatus,
           assigned_admin_id: nextAssigned,
         });
+
+        if (
+          nextMembershipStatus !== existing.membership_status &&
+          (nextMembershipStatus === 'Approved' || nextMembershipStatus === 'Rejected')
+        ) {
+          void dispatchMemberConfirmationMessage(updated, 'membership_update', 'gu', admin.id).catch((e) =>
+            console.error('Member status message warning:', e)
+          );
+        }
       }
 
       res.json({ registration: updated });

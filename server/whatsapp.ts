@@ -95,8 +95,8 @@ export function buildMultilingualWhatsAppMessage(params: {
       registration_confirmation: [
         `નમસ્તે ${name},`,
         `${wing} માં તમારી નોંધણી સફળતાપૂર્વક પ્રાપ્ત થઈ છે.`,
-        code ? `રજીસ્ટ્રેશન ID: ${code}` : '',
-        `ચકાસણી પછી તમારું ડિજિટલ મેમ્બરશિપ કાર્ડ સક્રિય થશે.`,
+        code ? `રજીસ્ટ્રેશન નંબર: ${code}` : '',
+        `તમારા સભ્યપદ અંગેની આગળની પુષ્ટિ અને સૂચના તમને WhatsApp સંદેશ દ્વારા મળશે.`,
       ]
         .filter(Boolean)
         .join('\n'),
@@ -105,14 +105,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         `આગામી કાર્યક્રમ "${evTitle}" માં તમારી હાજરી અપેક્ષિત છે.`,
         evDate ? `તારીખ: ${evDate}` : '',
         evVenue ? `સ્થળ: ${evVenue}` : '',
-        code ? `તમારો પાસ ID: ${code}` : '',
+        code ? `તમારો પાસ નંબર: ${code}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `જય શ્રી રામ ${name},`,
-        `${wing} સભ્યપદ અરજી (${code || 'ID'}) ની વર્તમાન સ્થિતિ: ${status}.`,
-        params.customMessage ? params.customMessage : 'વધુ વિગતો માટે સત્તાવાર પોર્ટલ તપાસો.',
+        `${wing} સભ્યપદ અરજી (${code || 'Ref'}) ની વર્તમાન સ્થિતિ: ${status}.`,
+        params.customMessage ? params.customMessage : 'વધુ સૂચનાઓ તમને આ નંબર પર સંદેશ દ્વારા મોકલવામાં આવશે.',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -132,8 +132,8 @@ export function buildMultilingualWhatsAppMessage(params: {
       registration_confirmation: [
         `नमस्ते ${name},`,
         `${wing} में आपका पंजीकरण सफलतापूर्वक दर्ज कर लिया गया है।`,
-        code ? `पंजीकरण ID: ${code}` : '',
-        `सत्यापन पूर्ण होने पर आपका डिजिटल सदस्यता कार्ड सक्रिय हो जाएगा।`,
+        code ? `पंजीकरण क्रमांक: ${code}` : '',
+        `आपके पंजीकरण की आगे की पुष्टि और सूचना WhatsApp संदेश द्वारा भेजी जाएगी।`,
       ]
         .filter(Boolean)
         .join('\n'),
@@ -142,14 +142,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         `आगामी कार्यक्रम "${evTitle}" के लिए अनुस्मारक:`,
         evDate ? `दिनांक: ${evDate}` : '',
         evVenue ? `स्थान: ${evVenue}` : '',
-        code ? `पास ID: ${code}` : '',
+        code ? `पास क्रमांक: ${code}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `जय श्री राम ${name},`,
-        `${wing} सदस्यता आवेदन (${code || 'ID'}) की अद्यतन स्थिति: ${status}.`,
-        params.customMessage ? params.customMessage : 'कृपया आधिकारिक पोर्टल पर विवरण देखें।',
+        `${wing} सदस्यता आवेदन (${code || 'Ref'}) की अद्यतन स्थिति: ${status}.`,
+        params.customMessage ? params.customMessage : 'अन्य आवश्यक जानकारी संदेश द्वारा भेजी जाएगी।',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -169,8 +169,8 @@ export function buildMultilingualWhatsAppMessage(params: {
       registration_confirmation: [
         `Namaste ${name},`,
         `Your registration with ${wing} has been received successfully.`,
-        code ? `Registration ID: ${code}` : '',
-        `Your Digital Identity Card will become active once verified by an authorized admin.`,
+        code ? `Reference ID: ${code}` : '',
+        `You will receive further membership confirmation updates directly via message.`,
       ]
         .filter(Boolean)
         .join('\n'),
@@ -179,14 +179,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         `This is a reminder for "${evTitle}".`,
         evDate ? `Date: ${evDate}` : '',
         evVenue ? `Venue: ${evVenue}` : '',
-        code ? `Pass ID: ${code}` : '',
+        code ? `Pass Ref: ${code}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `Namaste ${name},`,
-        `Your ${wing} membership application (${code || 'ID'}) status is now: ${status}.`,
-        params.customMessage ? params.customMessage : 'Visit the official portal for verification details.',
+        `Your ${wing} membership application (${code || 'Ref'}) status is now: ${status}.`,
+        params.customMessage ? params.customMessage : 'Thank you for registering with our organization.',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -331,6 +331,63 @@ export async function dispatchRegistrationNotifications(
   }
 
   return results;
+}
+
+export async function dispatchMemberConfirmationMessage(
+  reg: RegistrationRecord,
+  type: 'registration_confirmation' | 'membership_update' = 'registration_confirmation',
+  language: WhatsAppLanguage = 'gu',
+  actorAdminId: string | null = null
+): Promise<{
+  status: DeliveryStatus;
+  recipient: string;
+  messageText: string;
+  waMeUrl: string;
+  error?: string;
+}> {
+  const wingLabel = reg.organization_wing === 'durga_vahini' ? 'Durga Vahini' : 'Bajrang Dal';
+  const messageText = buildMultilingualWhatsAppMessage({
+    language,
+    templateType: type,
+    recipientName: reg.full_name,
+    registrationCode: reg.registration_code,
+    wingLabel,
+    membershipStatus: reg.membership_status,
+  });
+  const normalized = normalizeWhatsAppNumber(reg.whatsapp_number || reg.mobile);
+  const waMeUrl = normalized.length >= 10
+    ? `https://wa.me/${normalized}?text=${encodeURIComponent(messageText)}`
+    : '';
+
+  if (reg.whatsapp_consent !== 1 || normalized.length < 10) {
+    return {
+      status: 'skipped_disabled',
+      recipient: normalized,
+      messageText,
+      waMeUrl,
+    };
+  }
+
+  const dispatched = await sendSingleWhatsAppMessage(normalized, messageText);
+  await saveNotificationLogEntry({
+    registrationId: reg.id,
+    adminId: actorAdminId,
+    recipientWhatsapp: normalized,
+    language,
+    messageType: type,
+    messagePreview: messageText,
+    providerMessageId: dispatched.providerMessageId,
+    deliveryStatus: dispatched.status,
+    errorMessage: dispatched.errorMessage,
+  });
+
+  return {
+    status: dispatched.status,
+    recipient: normalized,
+    messageText,
+    waMeUrl,
+    error: dispatched.errorMessage,
+  };
 }
 
 export async function dispatchConsentBasedCampaignMessages(params: {

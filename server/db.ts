@@ -860,8 +860,8 @@ const DEFAULT_ORG_PAGES: Array<Omit<OrganizationPageRecord, 'updated_by' | 'upda
         a: 'Adult citizens aged 18 years and above who align with community service values and provide valid identification details may apply.',
       },
       {
-        q: 'How is my Digital Membership ID Card issued?',
-        a: 'Once an authorized administrator verifies your submitted profile and identity document, your membership status changes to Approved and your QR-verified PDF ID Card becomes active.',
+        q: 'How is my membership registration confirmed?',
+        a: 'Once you submit the form, you immediately receive a Reference ID and confirmation message. An authorized administrator verifies your submitted profile and sends further membership updates via WhatsApp/message.',
       },
       {
         q: 'Is my identity document shown publicly?',
@@ -925,7 +925,7 @@ const DEFAULT_ORG_PAGES: Array<Omit<OrganizationPageRecord, 'updated_by' | 'upda
       },
     ],
     new_joinee_guide:
-      '1. Use the Join Durga Vahini form on the homepage.\n2. Enter accurate district/city details and upload your photo and verification document.\n3. Once approved, download your Digital Membership ID Card and join local Matrushakti & Durga Vahini sessions.',
+      '1. Use the Join Durga Vahini form on the homepage.\n2. Enter accurate district/city details and upload your photo and verification document.\n3. You will receive a confirmation message with your Reference ID once submitted and when reviewed by an administrator.',
     contact_info: 'Durga Vahini Women’s Wing Desk · Coordinated via Authorized District Admins.',
   },
 ];
