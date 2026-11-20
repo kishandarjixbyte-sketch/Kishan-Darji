@@ -232,7 +232,25 @@ export async function loadEncryptedRegistrations(adminId: string): Promise<{
   const records: RegistrationItem[] = [];
   for (const env of envelopes) {
     try {
-      const item = await decryptPayload<RegistrationItem>(key, env.iv, env.ciphertext);
+      const raw = await decryptPayload<Partial<RegistrationItem>>(key, env.iv, env.ciphertext);
+      const item: RegistrationItem = {
+        ...(raw as RegistrationItem),
+        organization_wing: raw.organization_wing === 'durga_vahini' ? 'durga_vahini' : 'bajrang_dal',
+        father_or_guardian_name: raw.father_or_guardian_name || '',
+        whatsapp_number: raw.whatsapp_number || raw.mobile || '',
+        email: raw.email || '',
+        city_village: raw.city_village || '',
+        district: raw.district || '',
+        state: raw.state || 'Gujarat',
+        pincode: raw.pincode || '',
+        education: raw.education || '',
+        profile_photo_data: raw.profile_photo_data || '',
+        identity_doc_name: raw.identity_doc_name || '',
+        has_identity_doc: Boolean(raw.has_identity_doc),
+        identity_verification_status: raw.identity_verification_status || 'Pending',
+        membership_status: raw.membership_status || 'Pending',
+        registration_date: raw.registration_date || (raw.created_at ? raw.created_at.slice(0, 10) : ''),
+      };
       const pending = outboxMap.get(item.id);
       if (pending) {
         item.status = pending.status;

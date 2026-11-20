@@ -1,10 +1,21 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
+  :root {
+    --festival-accent: #ea580c;
+    --festival-secondary: #15803d;
+    --festival-banner-bg: #fff7ed;
+    --festival-banner-text: #9a3412;
+  }
+
+  .dark {
+    --festival-banner-bg: #1e293b;
+    --festival-banner-text: #fed7aa;
+  }
+
   body {
     font-family: 'Plus Jakarta Sans', 'Noto Sans Gujarati', -apple-system, BlinkMacSystemFont, sans-serif;
-    background-color: #FAF9F6;
-    color: #0F172A;
   }
 
   .font-mono {
@@ -18,4 +29,25 @@
 
 .text-balance {
   text-wrap: balance;
+}
+
+@keyframes gentle-diya-glow {
+  0%, 100% {
+    opacity: 0.78;
+    transform: translateY(0px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.festival-gentle-accent {
+  animation: gentle-diya-glow 4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .festival-gentle-accent {
+    animation: none;
+  }
 }

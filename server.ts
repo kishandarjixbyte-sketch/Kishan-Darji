@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { createApiApp } from './server/app.ts';
+import { startAutomaticBackupScheduler } from './server/backup.ts';
 
 async function startServer() {
   const app = createApiApp();
@@ -70,7 +71,8 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Join Bajrang Dal server running on http://0.0.0.0:${PORT}`);
+    console.log(`Bajrang Dal, VHP & Durga Vahini platform running on http://0.0.0.0:${PORT}`);
+    startAutomaticBackupScheduler();
   });
 }
 
