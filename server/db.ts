@@ -32,6 +32,9 @@ export interface AdminRecord {
   is_primary: number;
   notifications_enabled: number;
   is_active: number;
+  assigned_area: string;
+  assigned_district: string;
+  assigned_city: string;
   password_hash: string;
   created_at: string;
   updated_at: string;
@@ -293,6 +296,9 @@ function normalizeAdminRow(raw: Record<string, unknown>): AdminRecord {
     is_primary: toBit(raw.is_primary),
     notifications_enabled: toBit(raw.notifications_enabled),
     is_active: toBit(raw.is_active),
+    assigned_area: String(raw.assigned_area || ''),
+    assigned_district: String(raw.assigned_district || ''),
+    assigned_city: String(raw.assigned_city || ''),
     password_hash: String(raw.password_hash || ''),
     created_at: String(raw.created_at || new Date().toISOString()),
     updated_at: String(raw.updated_at || new Date().toISOString()),
@@ -559,6 +565,9 @@ async function getSqlite(): Promise<SqliteSyncInstance> {
           is_primary INTEGER NOT NULL DEFAULT 0,
           notifications_enabled INTEGER NOT NULL DEFAULT 1,
           is_active INTEGER NOT NULL DEFAULT 1,
+          assigned_area TEXT NOT NULL DEFAULT '',
+          assigned_district TEXT NOT NULL DEFAULT '',
+          assigned_city TEXT NOT NULL DEFAULT '',
           password_hash TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -732,6 +741,12 @@ async function getSqlite(): Promise<SqliteSyncInstance> {
         { name: 'identity_verification_status', ddl: "TEXT NOT NULL DEFAULT 'Pending'" },
         { name: 'membership_status', ddl: "TEXT NOT NULL DEFAULT 'Pending'" },
         { name: 'registration_date', ddl: "TEXT NOT NULL DEFAULT ''" },
+      ]);
+
+      ensureSqliteColumns(db, 'admins', [
+        { name: 'assigned_area', ddl: "TEXT NOT NULL DEFAULT ''" },
+        { name: 'assigned_district', ddl: "TEXT NOT NULL DEFAULT ''" },
+        { name: 'assigned_city', ddl: "TEXT NOT NULL DEFAULT ''" },
       ]);
 
       ensureSqliteColumns(db, 'notification_logs', [
@@ -1279,6 +1294,163 @@ export async function getPrimaryOrFallbackAdminId(): Promise<string | null> {
   return fallback?.id ?? null;
 }
 
+function splitAreaTokens(raw: string): string[] {
+  return raw
+    .split(/[,;/|\n]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length >= 2);
+}
+
+function scoreAreaMatch(
+  reg: {
+    district?: string;
+    city_village?: string;
+    pincode?: string;
+    full_address?: string;
+    assigned_admin_id?: string | null;
+  },
+  admin: Pick<AdminRecord, 'id' | 'role' | 'assigned_area' | 'assigned_district' | 'assigned_city'>
+): number {
+  if (admin.role === 'super_admin') return 100;
+  if (reg.assigned_admin_id && reg.assigned_admin_id === admin.id) return 90;
+
+  const districtTokens = splitAreaTokens(admin.assigned_district || '');
+  const cityTokens = splitAreaTokens(admin.assigned_city || '');
+  const areaTokens = splitAreaTokens(admin.assigned_area || '');
+
+  if (districtTokens.length === 0 && cityTokens.length === 0 && areaTokens.length === 0) {
+    return 0;
+  }
+
+  const regDistrict = String(reg.district || '').trim().toLowerCase();
+  const regCity = String(reg.city_village || '').trim().toLowerCase();
+  const regPin = String(reg.pincode || '').trim().toLowerCase();
+  const regAddr = String(reg.full_address || '').trim().toLowerCase();
+  const regFullHay = `${regDistrict} ${regCity} ${regPin} ${regAddr}`.trim();
+
+  if (!regFullHay) return 0;
+
+  const districtMatches =
+    districtTokens.length === 0
+      ? false
+      : districtTokens.some(
+          (tok) => regDistrict === tok || regDistrict.includes(tok) || regFullHay.includes(tok)
+        );
+
+  const cityMatches =
+    cityTokens.length === 0
+      ? false
+      : cityTokens.some(
+          (tok) =>
+            regCity === tok ||
+            regCity.includes(tok) ||
+            regPin === tok ||
+            regAddr.includes(tok)
+        );
+
+  // If admin is configured with BOTH district and specific cities/talukas/pincodes:
+  // require district match (if district present) AND city match
+  if (districtTokens.length > 0 && cityTokens.length > 0) {
+    if (districtMatches && cityMatches) return 80;
+    return 0;
+  }
+
+  // Only district configured -> matches entire district
+  if (districtTokens.length > 0 && districtMatches) return 60;
+
+  // Only city/pincode list configured
+  if (cityTokens.length > 0 && cityMatches) return 70;
+
+  // Fallback to free-form assigned_area label tokens
+  if (
+    districtTokens.length === 0 &&
+    cityTokens.length === 0 &&
+    areaTokens.some((tok) => regFullHay.includes(tok))
+  ) {
+    return 50;
+  }
+
+  return 0;
+}
+
+export function doesRegistrationMatchAdminArea(
+  reg: {
+    district?: string;
+    city_village?: string;
+    pincode?: string;
+    full_address?: string;
+    assigned_admin_id?: string | null;
+  },
+  admin: Pick<AdminRecord, 'id' | 'role' | 'assigned_area' | 'assigned_district' | 'assigned_city'>
+): boolean {
+  return scoreAreaMatch(reg, admin) > 0;
+}
+
+export function canAdminAccessRegistration(
+  admin: Pick<AdminRecord, 'id' | 'role' | 'assigned_area' | 'assigned_district' | 'assigned_city'>,
+  reg: Pick<RegistrationRecord, 'assigned_admin_id' | 'district' | 'city_village' | 'pincode' | 'full_address'>
+): boolean {
+  if (admin.role === 'super_admin') return true;
+  if (reg.assigned_admin_id === admin.id) return true;
+  return scoreAreaMatch(reg, admin) > 0;
+}
+
+export async function findMatchingAreaAdminForRegistration(input: {
+  district: string;
+  city_village: string;
+  pincode: string;
+  full_address: string;
+  preferred_admin_id?: string | null;
+}): Promise<{ adminId: string | null; reason: string }> {
+  await ensureInitialized();
+  const allAdmins = await listAdmins();
+  const activeAdmins = allAdmins.filter((a) => a.is_active === 1);
+
+  if (input.preferred_admin_id) {
+    const preferred = activeAdmins.find((a) => a.id === input.preferred_admin_id);
+    if (preferred) {
+      return {
+        adminId: preferred.id,
+        reason: `Assigned to Area Coordinator ${preferred.full_name}`,
+      };
+    }
+  }
+
+  const subAdmins = activeAdmins.filter((a) => a.role === 'sub_admin');
+  let bestAdmin: Omit<AdminRecord, 'password_hash'> | null = null;
+  let bestScore = 0;
+
+  for (const adm of subAdmins) {
+    const score = scoreAreaMatch(
+      {
+        district: input.district,
+        city_village: input.city_village,
+        pincode: input.pincode,
+        full_address: input.full_address,
+        assigned_admin_id: null,
+      },
+      adm
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestAdmin = adm;
+    }
+  }
+
+  if (bestAdmin && bestScore > 0) {
+    return {
+      adminId: bestAdmin.id,
+      reason: `Auto-routed by area (${bestAdmin.assigned_area || bestAdmin.assigned_district || bestAdmin.assigned_city})`,
+    };
+  }
+
+  const fallbackId = await getPrimaryOrFallbackAdminId();
+  return {
+    adminId: fallbackId,
+    reason: 'Auto-assigned to Primary Admin on submission',
+  };
+}
+
 export async function createRegistration(input: {
   organization_wing: OrganizationWing;
   full_name: string;
@@ -1301,12 +1473,20 @@ export async function createRegistration(input: {
   registration_date: string;
   whatsapp_consent: boolean;
   source: string;
+  preferred_admin_id?: string | null;
 }): Promise<RegistrationRecord> {
   await ensureInitialized();
   const id = crypto.randomUUID();
   const prefix = input.organization_wing === 'durga_vahini' ? 'DV' : 'JBD';
   const registrationCode = await generateRegistrationCode(prefix);
-  const assignedAdminId = await getPrimaryOrFallbackAdminId();
+  const routing = await findMatchingAreaAdminForRegistration({
+    district: input.district,
+    city_village: input.city_village,
+    pincode: input.pincode,
+    full_address: input.full_address,
+    preferred_admin_id: input.preferred_admin_id,
+  });
+  const assignedAdminId = routing.adminId;
   const now = new Date().toISOString();
 
   if (isSupabaseConfigured()) {
@@ -1355,7 +1535,7 @@ export async function createRegistration(input: {
           id: crypto.randomUUID(),
           registration_id: id,
           admin_id: assignedAdminId,
-          notes: 'Auto-assigned to Primary Admin on submission',
+          notes: routing.reason,
           assigned_at: now,
         },
       });
@@ -1365,6 +1545,7 @@ export async function createRegistration(input: {
       registration_code: registrationCode,
       wing: input.organization_wing,
       source: input.source,
+      assigned_admin_id: assignedAdminId,
     });
 
     const row = inserted[0];
@@ -1416,60 +1597,51 @@ export async function createRegistration(input: {
     sqlite
       .prepare(`
         INSERT INTO admin_assignments (id, registration_id, admin_id, notes, assigned_at)
-        VALUES (?, ?, ?, 'Auto-assigned to Primary Admin on submission', ?)
+        VALUES (?, ?, ?, ?, ?)
       `)
-      .run(crypto.randomUUID(), id, assignedAdminId, now);
+      .run(crypto.randomUUID(), id, assignedAdminId, routing.reason, now);
   }
 
   await writeAuditLog(null, 'PUBLIC_REGISTRATION_CREATED', 'registrations', id, {
     registration_code: registrationCode,
     wing: input.organization_wing,
     source: input.source,
+    assigned_admin_id: assignedAdminId,
   });
 
   const created = sqlite
-    .prepare('SELECT * FROM registrations WHERE id = ?')
+    .prepare(`
+      SELECT r.*, a.full_name as assigned_admin_name
+      FROM registrations r
+      LEFT JOIN admins a ON r.assigned_admin_id = a.id
+      WHERE r.id = ?
+    `)
     .get(id) as Record<string, unknown>;
   return normalizeRegistrationRow(created);
 }
 
 export async function listRegistrationsForAdmin(
-  admin: Omit<AdminRecord, 'password_hash'>
+  _admin: Omit<AdminRecord, 'password_hash'>
 ): Promise<RegistrationRecord[]> {
   await ensureInitialized();
   if (isSupabaseConfigured()) {
     const [admins, regs] = await Promise.all([
       supabaseFetch<Array<{ id: string; full_name: string }>>('admins?select=id,full_name'),
-      admin.role === 'super_admin'
-        ? supabaseFetch<Array<Record<string, unknown>>>('registrations?select=*&order=created_at.desc')
-        : supabaseFetch<Array<Record<string, unknown>>>(
-            `registrations?select=*&assigned_admin_id=eq.${encodeURIComponent(admin.id)}&order=created_at.desc`
-          ),
+      supabaseFetch<Array<Record<string, unknown>>>('registrations?select=*&order=created_at.desc'),
     ]);
     const nameMap = new Map(admins.map((a) => [a.id, a.full_name]));
     return regs.map((r) => normalizeRegistrationRow(r, nameMap, false));
   }
 
   const sqlite = await getSqlite();
-  const rows =
-    admin.role === 'super_admin'
-      ? (sqlite
-          .prepare(`
-            SELECT r.*, a.full_name as assigned_admin_name
-            FROM registrations r
-            LEFT JOIN admins a ON r.assigned_admin_id = a.id
-            ORDER BY r.created_at DESC
-          `)
-          .all() as Array<Record<string, unknown>>)
-      : (sqlite
-          .prepare(`
-            SELECT r.*, a.full_name as assigned_admin_name
-            FROM registrations r
-            LEFT JOIN admins a ON r.assigned_admin_id = a.id
-            WHERE r.assigned_admin_id = ?
-            ORDER BY r.created_at DESC
-          `)
-          .all(admin.id) as Array<Record<string, unknown>>);
+  const rows = sqlite
+    .prepare(`
+      SELECT r.*, a.full_name as assigned_admin_name
+      FROM registrations r
+      LEFT JOIN admins a ON r.assigned_admin_id = a.id
+      ORDER BY r.created_at DESC
+    `)
+    .all() as Array<Record<string, unknown>>;
 
   return rows.map((r) => normalizeRegistrationRow(r, undefined, false));
 }
@@ -2554,7 +2726,7 @@ export async function getActiveAdminById(id: string): Promise<Omit<AdminRecord, 
   const sqlite = await getSqlite();
   const row = sqlite
     .prepare(
-      'SELECT id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, created_at, updated_at FROM admins WHERE id = ? AND is_active = 1'
+      'SELECT id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, assigned_area, assigned_district, assigned_city, created_at, updated_at FROM admins WHERE id = ? AND is_active = 1'
     )
     .get(id) as Record<string, unknown> | undefined;
   if (!row) return null;
@@ -2576,7 +2748,7 @@ export async function listAdmins(): Promise<Array<Omit<AdminRecord, 'password_ha
 
   const sqlite = await getSqlite();
   const rows = sqlite
-    .prepare('SELECT id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, created_at, updated_at FROM admins ORDER BY is_primary DESC, created_at ASC')
+    .prepare('SELECT id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, assigned_area, assigned_district, assigned_city, created_at, updated_at FROM admins ORDER BY is_primary DESC, created_at ASC')
     .all() as Array<Record<string, unknown>>;
   return rows.map((r) => {
     const { password_hash: _ph, ...safe } = normalizeAdminRow(r);
@@ -2619,12 +2791,18 @@ export async function createAdmin(input: {
   role: AdminRole;
   is_primary: boolean;
   notifications_enabled: boolean;
+  assigned_area?: string;
+  assigned_district?: string;
+  assigned_city?: string;
   password: string;
 }): Promise<Omit<AdminRecord, 'password_hash'>> {
   await ensureInitialized();
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const passwordHash = hashPassword(input.password);
+  const assignedArea = (input.assigned_area || '').trim();
+  const assignedDistrict = (input.assigned_district || '').trim();
+  const assignedCity = (input.assigned_city || '').trim();
 
   if (isSupabaseConfigured()) {
     if (input.is_primary) {
@@ -2646,6 +2824,9 @@ export async function createAdmin(input: {
         is_primary: input.is_primary,
         notifications_enabled: input.notifications_enabled,
         is_active: true,
+        assigned_area: assignedArea,
+        assigned_district: assignedDistrict,
+        assigned_city: assignedCity,
         password_hash: passwordHash,
         created_at: now,
         updated_at: now,
@@ -2659,8 +2840,8 @@ export async function createAdmin(input: {
   if (input.is_primary) sqlite.prepare('UPDATE admins SET is_primary = 0').run();
   sqlite
     .prepare(`
-      INSERT INTO admins (id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, password_hash, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      INSERT INTO admins (id, full_name, email, mobile, whatsapp_number, role, is_primary, notifications_enabled, is_active, assigned_area, assigned_district, assigned_city, password_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
@@ -2671,6 +2852,9 @@ export async function createAdmin(input: {
       input.role,
       input.is_primary ? 1 : 0,
       input.notifications_enabled ? 1 : 0,
+      assignedArea,
+      assignedDistrict,
+      assignedCity,
       passwordHash,
       now,
       now
@@ -2693,11 +2877,17 @@ export async function updateAdmin(
     is_primary: boolean;
     notifications_enabled: boolean;
     is_active: boolean;
+    assigned_area?: string;
+    assigned_district?: string;
+    assigned_city?: string;
     password_hash: string;
   }
 ): Promise<Omit<AdminRecord, 'password_hash'>> {
   await ensureInitialized();
   const now = new Date().toISOString();
+  const assignedArea = updates.assigned_area !== undefined ? updates.assigned_area.trim() : existing.assigned_area;
+  const assignedDistrict = updates.assigned_district !== undefined ? updates.assigned_district.trim() : existing.assigned_district;
+  const assignedCity = updates.assigned_city !== undefined ? updates.assigned_city.trim() : existing.assigned_city;
 
   if (isSupabaseConfigured()) {
     if (updates.is_primary && existing.is_primary !== 1) {
@@ -2720,6 +2910,9 @@ export async function updateAdmin(
           is_primary: updates.is_primary,
           notifications_enabled: updates.notifications_enabled,
           is_active: updates.is_active,
+          assigned_area: assignedArea,
+          assigned_district: assignedDistrict,
+          assigned_city: assignedCity,
           password_hash: updates.password_hash,
           updated_at: now,
         },
@@ -2735,7 +2928,7 @@ export async function updateAdmin(
     .prepare(`
       UPDATE admins
       SET full_name = ?, email = ?, mobile = ?, whatsapp_number = ?, role = ?,
-          is_primary = ?, notifications_enabled = ?, is_active = ?, password_hash = ?, updated_at = ?
+          is_primary = ?, notifications_enabled = ?, is_active = ?, assigned_area = ?, assigned_district = ?, assigned_city = ?, password_hash = ?, updated_at = ?
       WHERE id = ?
     `)
     .run(
@@ -2747,6 +2940,9 @@ export async function updateAdmin(
       updates.is_primary ? 1 : 0,
       updates.notifications_enabled ? 1 : 0,
       updates.is_active ? 1 : 0,
+      assignedArea,
+      assignedDistrict,
+      assignedCity,
       updates.password_hash,
       now,
       id

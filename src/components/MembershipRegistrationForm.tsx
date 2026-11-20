@@ -22,6 +22,9 @@ interface Props {
   lang: Language;
   onChangeLang: (lang: Language) => void;
   source: 'qr_code' | 'direct_link';
+  prefillAreaAdminId?: string;
+  prefillDistrict?: string;
+  prefillCity?: string;
   onBackHome: () => void;
   onSwitchWing: (wing: OrganizationWing) => void;
 }
@@ -106,6 +109,9 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
   lang,
   onChangeLang,
   source,
+  prefillAreaAdminId,
+  prefillDistrict,
+  prefillCity,
   onBackHome,
   onSwitchWing,
 }) => {
@@ -123,8 +129,8 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [email, setEmail] = useState('');
   const [fullAddress, setFullAddress] = useState('');
-  const [cityVillage, setCityVillage] = useState('');
-  const [district, setDistrict] = useState('');
+  const [cityVillage, setCityVillage] = useState(prefillCity || '');
+  const [district, setDistrict] = useState(prefillDistrict || '');
   const [stateName, setStateName] = useState('Gujarat');
   const [pincode, setPincode] = useState('');
   const [occupation, setOccupation] = useState<OccupationType>('Student');
@@ -163,6 +169,11 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
   useEffect(() => {
     void loadCaptcha();
   }, [loadCaptcha, wing]);
+
+  useEffect(() => {
+    if (prefillDistrict && !district) setDistrict(prefillDistrict);
+    if (prefillCity && !cityVillage) setCityVillage(prefillCity);
+  }, [prefillDistrict, prefillCity, district, cityVillage]);
 
   const maxEligibleDob = (() => {
     const d = new Date();
@@ -293,6 +304,7 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
           captcha_token: captcha.token,
           captcha_answer: Number(captchaAnswer),
           source,
+          area_admin_id: prefillAreaAdminId || undefined,
           lang,
         }),
       });
@@ -345,7 +357,7 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
         <button
           type="button"
           onClick={onBackHome}
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+          className="hidden md:inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4" />
           <span>Back to Home</span>
@@ -359,6 +371,18 @@ export const MembershipRegistrationForm: React.FC<Props> = ({
           {isDv ? 'Switch to Bajrang Dal Registration' : 'Switch to Durga Vahini (Women’s Wing)'}
         </button>
       </div>
+
+      {(prefillAreaAdminId || prefillDistrict || prefillCity) && (
+        <div className="rounded-xl border border-orange-200 dark:border-orange-900/50 bg-orange-50 dark:bg-orange-950/30 px-4 py-2.5 text-xs text-orange-900 dark:text-orange-200 flex items-center justify-between gap-2">
+          <span>
+            Area Coordinator Link Active
+            {(prefillCity || prefillDistrict)
+              ? ` · ${[prefillCity, prefillDistrict].filter(Boolean).join(', ')}`
+              : ''}
+          </span>
+          <span className="font-semibold">Auto-routed to Area Admin</span>
+        </div>
+      )}
 
       {/* Form Header Banner */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">

@@ -36,6 +36,9 @@ export interface AdminUser {
   is_primary: number;
   notifications_enabled: number;
   is_active: number;
+  assigned_area?: string;
+  assigned_district?: string;
+  assigned_city?: string;
   created_at: string;
   updated_at: string;
 }

@@ -40,7 +40,7 @@ export const OrganizationInfoPages: React.FC<Props> = ({
           <button
             type="button"
             onClick={onBackHome}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            className="hidden md:inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back to Home</span>
@@ -50,10 +50,10 @@ export const OrganizationInfoPages: React.FC<Props> = ({
           </h1>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex overflow-x-auto no-scrollbar gap-2 pb-1 sm:pb-0 sm:flex-wrap w-full sm:w-auto">
           {[
             { slug: 'bajrang_dal' as const, label: 'Bajrang Dal' },
-            { slug: 'vhp' as const, label: 'Vishva Hindu Parishad (VHP)' },
+            { slug: 'vhp' as const, label: 'VHP' },
             { slug: 'durga_vahini' as const, label: 'Durga Vahini' },
           ].map((tab) => (
             <button
@@ -63,7 +63,7 @@ export const OrganizationInfoPages: React.FC<Props> = ({
                 onSelectSlug(tab.slug);
                 setOpenFaqIdx(0);
               }}
-              className={`min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-colors cursor-pointer ${
+              className={`min-h-[40px] px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                 activeSlug === tab.slug
                   ? tab.slug === 'durga_vahini'
                     ? 'bg-rose-700 text-white'

@@ -17,10 +17,17 @@ CREATE TABLE IF NOT EXISTS public.admins (
   is_primary BOOLEAN NOT NULL DEFAULT FALSE,
   notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  assigned_area TEXT NOT NULL DEFAULT '',
+  assigned_district TEXT NOT NULL DEFAULT '',
+  assigned_city TEXT NOT NULL DEFAULT '',
   password_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.admins ADD COLUMN IF NOT EXISTS assigned_area TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.admins ADD COLUMN IF NOT EXISTS assigned_district TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.admins ADD COLUMN IF NOT EXISTS assigned_city TEXT NOT NULL DEFAULT '';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_single_primary_admin
   ON public.admins (is_primary) WHERE is_primary = TRUE;

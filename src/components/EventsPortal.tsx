@@ -490,12 +490,12 @@ export const EventsPortal: React.FC<Props> = ({
           <button
             type="button"
             onClick={onBackHome}
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            className="hidden md:inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back to Home</span>
           </button>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">
+          <h1 className="mt-1 text-xl sm:text-3xl font-bold text-slate-900 dark:text-white">
             Organization Events & Program Portals
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400">
@@ -506,7 +506,7 @@ export const EventsPortal: React.FC<Props> = ({
         <button
           type="button"
           onClick={onOpenAdminEvents}
-          className="min-h-[44px] inline-flex items-center gap-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 px-4 py-2.5 text-sm font-semibold text-white cursor-pointer"
+          className="min-h-[44px] w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 px-4 py-2.5 text-sm font-semibold text-white cursor-pointer"
         >
           <CalendarPlus className="w-4 h-4" />
           <span>{isAdminSession ? 'Manage / Create Events' : 'Admin: Create Event'}</span>
@@ -514,7 +514,7 @@ export const EventsPortal: React.FC<Props> = ({
       </div>
 
       {/* Wing filter tabs */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-2 pb-1 sm:pb-0">
         {[
           { id: 'all', label: 'All Events' },
           { id: 'bajrang_dal', label: 'Bajrang Dal' },
@@ -525,7 +525,7 @@ export const EventsPortal: React.FC<Props> = ({
             key={tab.id}
             type="button"
             onClick={() => setWingFilter(tab.id)}
-            className={`min-h-[38px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+            className={`min-h-[38px] px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
               wingFilter === tab.id
                 ? 'bg-slate-900 dark:bg-orange-600 text-white'
                 : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'

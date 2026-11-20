@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import express from 'express';
 import {
+  canAdminAccessRegistration,
   checkDatabaseHealth,
   createAdmin,
   createEvent,
@@ -428,6 +429,10 @@ export function createApiApp() {
           : body.source === 'admin_manual'
           ? 'admin_manual'
           : 'direct_link';
+      const preferredAdminId =
+        typeof body.area_admin_id === 'string' && body.area_admin_id.trim()
+          ? body.area_admin_id.trim()
+          : null;
 
       const createdRecord = await createRegistration({
         organization_wing: wing,
@@ -451,6 +456,7 @@ export function createApiApp() {
         registration_date: cleanRegDate,
         whatsapp_consent: Boolean(body.whatsapp_consent),
         source: cleanSource,
+        preferred_admin_id: preferredAdminId,
       });
 
       const dashboardUrl = `${getAppBaseUrl(req)}/?view=admin`;
@@ -493,6 +499,157 @@ export function createApiApp() {
         },
         memberConfirmation,
         notifications: notificationResults,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ==========================================================================
+  // ADMIN & AREA ADMIN DIRECT FIELD DATA COLLECTION
+  // ==========================================================================
+  app.post('/api/admin/registrations/collect', requireAdmin, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const admin = req.admin!;
+      const body = (req.body || {}) as Record<string, unknown>;
+      const wing: OrganizationWing =
+        body.organization_wing === 'durga_vahini' ? 'durga_vahini' : 'bajrang_dal';
+
+      const cleanName = typeof body.full_name === 'string' ? body.full_name.trim() : '';
+      const cleanFatherOrGuardian =
+        typeof body.father_or_guardian_name === 'string' ? body.father_or_guardian_name.trim() : '';
+      const cleanMobile = typeof body.mobile === 'string' ? body.mobile.replace(/\D/g, '') : '';
+      const cleanWhatsappRaw =
+        typeof body.whatsapp_number === 'string' ? body.whatsapp_number.replace(/\D/g, '') : '';
+      const cleanWhatsapp = cleanWhatsappRaw.length >= 10 ? cleanWhatsappRaw : cleanMobile;
+      const cleanEmail = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const cleanDob = typeof body.dob === 'string' ? body.dob.trim() : '';
+      const cleanAddress = typeof body.full_address === 'string' ? body.full_address.trim() : '';
+      const cleanCity =
+        typeof body.city_village === 'string' && body.city_village.trim()
+          ? body.city_village.trim()
+          : admin.assigned_city.split(',')[0]?.trim() || '';
+      const cleanDistrict =
+        typeof body.district === 'string' && body.district.trim()
+          ? body.district.trim()
+          : admin.assigned_district || '';
+      const cleanState = typeof body.state === 'string' && body.state.trim() ? body.state.trim() : 'Gujarat';
+      const cleanPincode = typeof body.pincode === 'string' ? body.pincode.replace(/\D/g, '').slice(0, 6) : '';
+      const cleanOccupation = typeof body.occupation === 'string' ? body.occupation.trim() : 'Other';
+      const cleanEducation = typeof body.education === 'string' ? body.education.trim() : '';
+      const cleanRegDate =
+        typeof body.registration_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.registration_date)
+          ? body.registration_date
+          : new Date().toISOString().slice(0, 10);
+
+      if (cleanName.length < 2 || cleanName.length > 120) {
+        return res.status(400).json({ error: 'Please enter a valid full name (2-120 characters).' });
+      }
+      if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
+        return res.status(400).json({ error: 'Please enter a valid 10-digit Indian mobile number.' });
+      }
+      if (!cleanDob) {
+        return res.status(400).json({ error: 'Date of Birth is required.' });
+      }
+
+      const minAge = wing === 'durga_vahini' ? 15 : 18;
+      const computedAge = calculateAgeFromDob(cleanDob);
+      if (computedAge < minAge || computedAge > 110) {
+        return res.status(400).json({
+          error:
+            wing === 'durga_vahini'
+              ? 'Durga Vahini membership requires participants to be aged 15 years or older.'
+              : 'Bajrang Dal registrations are strictly limited to adults aged 18 and above.',
+        });
+      }
+      if (cleanAddress.length < 5 || cleanAddress.length > 500) {
+        return res.status(400).json({ error: 'Please enter complete residential address (min 5 chars).' });
+      }
+
+      const resolvedOccupation: OccupationType = VALID_OCCUPATIONS.includes(cleanOccupation as OccupationType)
+        ? (cleanOccupation as OccupationType)
+        : 'Other';
+
+      const profilePhotoData = validateDataUriUpload(body.profile_photo_data, 2_500_000, [
+        'data:image/jpeg',
+        'data:image/jpg',
+        'data:image/png',
+        'data:image/webp',
+      ]);
+      const identityDocData = validateDataUriUpload(body.identity_doc_data, 3_500_000, [
+        'data:image/jpeg',
+        'data:image/jpg',
+        'data:image/png',
+        'data:image/webp',
+        'data:application/pdf',
+      ]);
+      const identityDocName =
+        typeof body.identity_doc_name === 'string' ? body.identity_doc_name.slice(0, 120) : '';
+
+      const duplicate = await findRegistrationByMobile(cleanMobile);
+      if (duplicate) {
+        return res.status(409).json({
+          error: `Mobile number already registered (ID: ${duplicate.registration_code}).`,
+          existingCode: duplicate.registration_code,
+        });
+      }
+
+      const preferredAdminId =
+        admin.role === 'super_admin' && typeof body.assigned_admin_id === 'string' && body.assigned_admin_id.trim()
+          ? body.assigned_admin_id.trim()
+          : admin.id;
+
+      const createdRecord = await createRegistration({
+        organization_wing: wing,
+        full_name: cleanName,
+        father_or_guardian_name: cleanFatherOrGuardian,
+        mobile: cleanMobile,
+        whatsapp_number: cleanWhatsapp,
+        email: cleanEmail,
+        age: computedAge,
+        dob: cleanDob,
+        full_address: cleanAddress,
+        city_village: cleanCity,
+        district: cleanDistrict,
+        state: cleanState,
+        pincode: cleanPincode,
+        occupation: resolvedOccupation,
+        education: cleanEducation,
+        profile_photo_data: profilePhotoData,
+        identity_doc_data: identityDocData,
+        identity_doc_name: identityDocName,
+        registration_date: cleanRegDate,
+        whatsapp_consent: body.whatsapp_consent !== false,
+        source: 'admin_manual',
+        preferred_admin_id: preferredAdminId,
+      });
+
+      await writeAuditLog(admin.id, 'ADMIN_COLLECTED_REGISTRATION', 'registrations', createdRecord.id, {
+        registration_code: createdRecord.registration_code,
+        wing,
+        district: cleanDistrict,
+        city_village: cleanCity,
+      });
+
+      const dashboardUrl = `${getAppBaseUrl(req)}/?view=admin`;
+      const memberLang: WhatsAppLanguage = body.lang === 'gu' || body.lang === 'hi' ? body.lang : 'gu';
+      let memberConfirmation = null;
+      try {
+        await dispatchRegistrationNotifications(createdRecord, dashboardUrl);
+        memberConfirmation = await dispatchMemberConfirmationMessage(
+          createdRecord,
+          'registration_confirmation',
+          memberLang,
+          admin.id
+        );
+      } catch (notifyErr) {
+        console.error('Admin collect notification warning:', notifyErr);
+      }
+
+      res.status(201).json({
+        success: true,
+        registration: createdRecord,
+        memberConfirmation,
       });
     } catch (err) {
       next(err);
@@ -822,8 +979,8 @@ export function createApiApp() {
       const admin = req.admin!;
       const reg = await getRegistrationById(req.params.id, true);
       if (!reg) return res.status(404).json({ error: 'Registration not found.' });
-      if (admin.role !== 'super_admin' && reg.assigned_admin_id !== admin.id) {
-        return res.status(403).json({ error: 'Access denied: identity documents are restricted to authorized admins.' });
+      if (!canAdminAccessRegistration(admin, reg)) {
+        return res.status(403).json({ error: 'Access denied: identity documents are restricted to authorized admins for this area.' });
       }
       await writeAuditLog(admin.id, 'VIEW_PRIVATE_IDENTITY_DOC', 'registrations', reg.id, {
         registration_code: reg.registration_code,
@@ -849,8 +1006,8 @@ export function createApiApp() {
       if (!existing) {
         return res.status(404).json({ error: 'Registration not found.' });
       }
-      if (admin.role !== 'super_admin' && existing.assigned_admin_id !== admin.id) {
-        return res.status(403).json({ error: 'Access denied: this registration is not assigned to you.' });
+      if (!canAdminAccessRegistration(admin, existing)) {
+        return res.status(403).json({ error: 'Access denied: this registration is outside your assigned area.' });
       }
 
       const body = (req.body || {}) as Record<string, unknown>;
@@ -866,7 +1023,24 @@ export function createApiApp() {
 
         updated = await updateRegistrationById(
           id,
-          { status: nextStatus, follow_up_notes: nextNotes },
+          {
+            status: nextStatus,
+            follow_up_notes: nextNotes,
+            city_village:
+              typeof body.city_village === 'string' && body.city_village.trim()
+                ? body.city_village.trim()
+                : existing.city_village,
+            district:
+              typeof body.district === 'string' && body.district.trim()
+                ? body.district.trim()
+                : existing.district,
+            full_address:
+              typeof body.full_address === 'string' && body.full_address.trim().length >= 5
+                ? body.full_address.trim()
+                : existing.full_address,
+            education:
+              typeof body.education === 'string' ? body.education.trim() : existing.education,
+          },
           admin.id
         );
         await writeAuditLog(admin.id, 'SUB_ADMIN_UPDATE_STATUS', 'registrations', id, {
@@ -1022,7 +1196,7 @@ export function createApiApp() {
           if (!item?.id) continue;
           const reg = await getRegistrationById(item.id);
           if (!reg) continue;
-          if (admin.role !== 'super_admin' && reg.assigned_admin_id !== admin.id) continue;
+          if (!canAdminAccessRegistration(admin, reg)) continue;
 
           const nextStatus = item.status && VALID_STATUSES.includes(item.status) ? item.status : reg.status;
           const nextNotes = typeof item.follow_up_notes === 'string' ? item.follow_up_notes : reg.follow_up_notes;
@@ -1122,6 +1296,9 @@ export function createApiApp() {
             full_name: a.full_name,
             role: a.role,
             is_primary: a.is_primary,
+            assigned_area: a.assigned_area,
+            assigned_district: a.assigned_district,
+            assigned_city: a.assigned_city,
           })),
         });
       }
@@ -1141,6 +1318,9 @@ export function createApiApp() {
         role,
         is_primary,
         notifications_enabled,
+        assigned_area,
+        assigned_district,
+        assigned_city,
         password,
       } = (req.body || {}) as Record<string, unknown>;
 
@@ -1153,6 +1333,9 @@ export function createApiApp() {
           : normalizeWhatsAppNumber(cleanMobile);
       const cleanRole = role === 'super_admin' ? 'super_admin' : 'sub_admin';
       const cleanPass = typeof password === 'string' && password.length >= 6 ? password : '';
+      const cleanArea = typeof assigned_area === 'string' ? assigned_area.trim() : '';
+      const cleanDistrict = typeof assigned_district === 'string' ? assigned_district.trim() : '';
+      const cleanCity = typeof assigned_city === 'string' ? assigned_city.trim() : '';
 
       if (cleanName.length < 2 || !cleanEmail.includes('@') || !/^[6-9]\d{9}$/.test(cleanMobile) || !cleanPass) {
         return res.status(400).json({
@@ -1173,12 +1356,17 @@ export function createApiApp() {
         role: cleanRole,
         is_primary: is_primary === true,
         notifications_enabled: notifications_enabled !== false,
+        assigned_area: cleanArea,
+        assigned_district: cleanDistrict,
+        assigned_city: cleanCity,
         password: cleanPass,
       });
 
       await writeAuditLog(req.admin!.id, 'CREATE_ADMIN', 'admins', created.id, {
         email: cleanEmail,
         role: cleanRole,
+        assigned_area: cleanArea,
+        assigned_district: cleanDistrict,
       });
       res.status(201).json({ admin: created });
     } catch (err) {
@@ -1212,6 +1400,9 @@ export function createApiApp() {
           ? body.notifications_enabled
           : existing.notifications_enabled === 1;
       const nextActive = typeof body.is_active === 'boolean' ? body.is_active : existing.is_active === 1;
+      const nextArea = typeof body.assigned_area === 'string' ? body.assigned_area.trim() : existing.assigned_area;
+      const nextDistrict = typeof body.assigned_district === 'string' ? body.assigned_district.trim() : existing.assigned_district;
+      const nextCity = typeof body.assigned_city === 'string' ? body.assigned_city.trim() : existing.assigned_city;
       const nextPassHash =
         typeof body.password === 'string' && body.password.length >= 6
           ? hashPassword(body.password)
@@ -1226,12 +1417,17 @@ export function createApiApp() {
         is_primary: nextPrimary,
         notifications_enabled: nextNotify,
         is_active: nextActive,
+        assigned_area: nextArea,
+        assigned_district: nextDistrict,
+        assigned_city: nextCity,
         password_hash: nextPassHash,
       });
 
       await writeAuditLog(req.admin!.id, 'UPDATE_ADMIN', 'admins', id, {
         role: nextRole,
         is_primary: nextPrimary,
+        assigned_area: nextArea,
+        assigned_district: nextDistrict,
       });
       res.json({ admin: updated });
     } catch (err) {
