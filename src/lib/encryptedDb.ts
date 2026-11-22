@@ -28,8 +28,18 @@ interface VaultMeta {
   value: string;
 }
 
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+// Session-level caches so PBKDF2 key derivation & IDB open do not block every sync
+let dbPromise: Promise<IDBDatabase> | null = null;
+let deviceIdPromise: Promise<string> | null = null;
+let deviceSaltPromise: Promise<Uint8Array> | null = null;
+const vaultKeyCache = new Map<string, Promise<CryptoKey>>();
+
 function openVaultDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -45,17 +55,30 @@ function openVaultDb(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
   });
+  return dbPromise;
 }
 
 function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const CHUNK_SIZE = 0x8000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.byteLength; i += CHUNK_SIZE) {
+    const slice = bytes.subarray(i, i + CHUNK_SIZE);
+    parts.push(String.fromCharCode(...slice));
   }
-  return btoa(binary);
+  return btoa(parts.join(''));
 }
 
 function fromBase64(b64: string): Uint8Array {
@@ -67,33 +90,39 @@ function fromBase64(b64: string): Uint8Array {
   return bytes;
 }
 
-async function getOrCreateDeviceSalt(db: IDBDatabase): Promise<Uint8Array> {
-  const existing = await new Promise<VaultMeta | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE_META, 'readonly');
-    const req = tx.objectStore(STORE_META).get('device_salt');
-    req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
-    req.onerror = () => reject(req.error);
-  });
+function getOrCreateDeviceSalt(db: IDBDatabase): Promise<Uint8Array> {
+  if (deviceSaltPromise) return deviceSaltPromise;
+  deviceSaltPromise = (async () => {
+    const existing = await new Promise<VaultMeta | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readonly');
+      const req = tx.objectStore(STORE_META).get('device_salt');
+      req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
+      req.onerror = () => reject(req.error);
+    });
 
-  if (existing?.value) {
-    return fromBase64(existing.value);
-  }
+    if (existing?.value) {
+      return fromBase64(existing.value);
+    }
 
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_META, 'readwrite');
-    tx.objectStore(STORE_META).put({ key: 'device_salt', value: toBase64(salt) });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readwrite');
+      tx.objectStore(STORE_META).put({ key: 'device_salt', value: toBase64(salt) });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    return salt;
+  })().catch((err) => {
+    deviceSaltPromise = null;
+    throw err;
   });
-  return salt;
+  return deviceSaltPromise;
 }
 
 async function deriveVaultKey(secretSeed: string, salt: Uint8Array): Promise<CryptoKey> {
-  const enc = new TextEncoder();
   const baseKey = await crypto.subtle.importKey(
     'raw',
-    enc.encode(secretSeed),
+    textEncoder.encode(secretSeed),
     { name: 'PBKDF2' },
     false,
     ['deriveKey']
@@ -113,9 +142,23 @@ async function deriveVaultKey(secretSeed: string, salt: Uint8Array): Promise<Cry
   );
 }
 
+function getCachedAdminVaultKey(adminId: string, db: IDBDatabase): Promise<CryptoKey> {
+  const cached = vaultKeyCache.get(adminId);
+  if (cached) return cached;
+  const promise = (async () => {
+    const salt = await getOrCreateDeviceSalt(db);
+    return deriveVaultKey(`jbd-vault-${adminId}`, salt);
+  })().catch((err) => {
+    vaultKeyCache.delete(adminId);
+    throw err;
+  });
+  vaultKeyCache.set(adminId, promise);
+  return promise;
+}
+
 async function encryptPayload(key: CryptoKey, data: unknown): Promise<{ iv: string; ciphertext: string }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const encoded = textEncoder.encode(JSON.stringify(data));
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
   return {
     iv: toBase64(iv),
@@ -131,26 +174,33 @@ async function decryptPayload<T>(key: CryptoKey, ivB64: string, cipherB64: strin
     key,
     cipher as BufferSource
   );
-  return JSON.parse(new TextDecoder().decode(decrypted)) as T;
+  return JSON.parse(textDecoder.decode(decrypted)) as T;
 }
 
-export async function getDeviceId(): Promise<string> {
-  const db = await openVaultDb();
-  const existing = await new Promise<VaultMeta | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE_META, 'readonly');
-    const req = tx.objectStore(STORE_META).get('device_id');
-    req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
-    req.onerror = () => reject(req.error);
+export function getDeviceId(): Promise<string> {
+  if (deviceIdPromise) return deviceIdPromise;
+  deviceIdPromise = (async () => {
+    const db = await openVaultDb();
+    const existing = await new Promise<VaultMeta | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readonly');
+      const req = tx.objectStore(STORE_META).get('device_id');
+      req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
+      req.onerror = () => reject(req.error);
+    });
+    if (existing?.value) return existing.value;
+    const newId = `pwa-${crypto.randomUUID().slice(0, 8)}`;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readwrite');
+      tx.objectStore(STORE_META).put({ key: 'device_id', value: newId });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    return newId;
+  })().catch((err) => {
+    deviceIdPromise = null;
+    throw err;
   });
-  if (existing?.value) return existing.value;
-  const newId = `pwa-${crypto.randomUUID().slice(0, 8)}`;
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_META, 'readwrite');
-    tx.objectStore(STORE_META).put({ key: 'device_id', value: newId });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-  return newId;
+  return deviceIdPromise;
 }
 
 export async function saveAuthorizedRegistrationsEncrypted(
@@ -159,42 +209,57 @@ export async function saveAuthorizedRegistrationsEncrypted(
   syncedAt: string
 ): Promise<void> {
   const db = await openVaultDb();
-  const salt = await getOrCreateDeviceSalt(db);
-  const key = await deriveVaultKey(`jbd-vault-${adminId}`, salt);
+  const key = await getCachedAdminVaultKey(adminId, db);
 
-  const envelopes: EncryptedEnvelope[] = [];
-  for (const r of records) {
-    const clean: RegistrationItem = { ...r, localSyncStatus: 'synced' };
-    const { iv, ciphertext } = await encryptPayload(key, clean);
-    envelopes.push({
-      id: r.id,
-      adminId,
-      iv,
-      ciphertext,
-      syncStatus: 'synced',
-      updatedAt: r.updated_at,
-    });
-  }
+  // Read existing envelopes to skip re-encrypting unchanged records
+  const existingEnvelopes = await new Promise<EncryptedEnvelope[]>((resolve, reject) => {
+    const tx = db.transaction(STORE_RECORDS, 'readonly');
+    const idx = tx.objectStore(STORE_RECORDS).index('adminId');
+    const req = idx.getAll(IDBKeyRange.only(adminId));
+    req.onsuccess = () => resolve((req.result as EncryptedEnvelope[]) || []);
+    req.onerror = () => reject(req.error);
+  });
+
+  const existingMap = new Map(existingEnvelopes.map((e) => [e.id, e]));
+  const incomingIds = new Set(records.map((r) => r.id));
+
+  const recordsToEncrypt = records.filter((r) => {
+    const prev = existingMap.get(r.id);
+    if (!prev) return true;
+    return prev.updatedAt !== r.updated_at || prev.syncStatus !== 'synced';
+  });
+
+  const idsToDelete = existingEnvelopes
+    .filter((e) => !incomingIds.has(e.id))
+    .map((e) => e.id);
+
+  // Encrypt only new or modified records in parallel
+  const newEnvelopes: EncryptedEnvelope[] = await Promise.all(
+    recordsToEncrypt.map(async (r) => {
+      const clean: RegistrationItem = { ...r, localSyncStatus: 'synced' };
+      const { iv, ciphertext } = await encryptPayload(key, clean);
+      return {
+        id: r.id,
+        adminId,
+        iv,
+        ciphertext,
+        syncStatus: 'synced' as const,
+        updatedAt: r.updated_at,
+      };
+    })
+  );
 
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE_RECORDS, STORE_META], 'readwrite');
     const recordStore = tx.objectStore(STORE_RECORDS);
     const metaStore = tx.objectStore(STORE_META);
 
-    // Clear previous records for this admin to keep authorized set exact
-    const idx = recordStore.index('adminId');
-    const cursorReq = idx.openCursor(IDBKeyRange.only(adminId));
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      } else {
-        for (const env of envelopes) {
-          recordStore.put(env);
-        }
-      }
-    };
+    for (const staleId of idsToDelete) {
+      recordStore.delete(staleId);
+    }
+    for (const env of newEnvelopes) {
+      recordStore.put(env);
+    }
 
     metaStore.put({ key: `last_sync_${adminId}`, value: syncedAt });
     tx.oncomplete = () => resolve();
@@ -208,63 +273,65 @@ export async function loadEncryptedRegistrations(adminId: string): Promise<{
   pendingCount: number;
 }> {
   const db = await openVaultDb();
-  const salt = await getOrCreateDeviceSalt(db);
-  const key = await deriveVaultKey(`jbd-vault-${adminId}`, salt);
+  const key = await getCachedAdminVaultKey(adminId, db);
 
-  const envelopes = await new Promise<EncryptedEnvelope[]>((resolve, reject) => {
-    const tx = db.transaction(STORE_RECORDS, 'readonly');
-    const idx = tx.objectStore(STORE_RECORDS).index('adminId');
-    const req = idx.getAll(IDBKeyRange.only(adminId));
-    req.onsuccess = () => resolve((req.result as EncryptedEnvelope[]) || []);
-    req.onerror = () => reject(req.error);
-  });
+  const [envelopes, outbox, lastSyncMeta] = await Promise.all([
+    new Promise<EncryptedEnvelope[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_RECORDS, 'readonly');
+      const idx = tx.objectStore(STORE_RECORDS).index('adminId');
+      const req = idx.getAll(IDBKeyRange.only(adminId));
+      req.onsuccess = () => resolve((req.result as EncryptedEnvelope[]) || []);
+      req.onerror = () => reject(req.error);
+    }),
+    getPendingMutations(adminId),
+    new Promise<VaultMeta | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readonly');
+      const req = tx.objectStore(STORE_META).get(`last_sync_${adminId}`);
+      req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
+      req.onerror = () => reject(req.error);
+    }),
+  ]);
 
-  const outbox = await getPendingMutations(adminId);
   const outboxMap = new Map(outbox.map((m) => [m.id, m]));
 
-  const lastSyncMeta = await new Promise<VaultMeta | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE_META, 'readonly');
-    const req = tx.objectStore(STORE_META).get(`last_sync_${adminId}`);
-    req.onsuccess = () => resolve(req.result as VaultMeta | undefined);
-    req.onerror = () => reject(req.error);
-  });
-
-  const records: RegistrationItem[] = [];
-  for (const env of envelopes) {
-    try {
-      const raw = await decryptPayload<Partial<RegistrationItem>>(key, env.iv, env.ciphertext);
-      const item: RegistrationItem = {
-        ...(raw as RegistrationItem),
-        organization_wing: raw.organization_wing === 'durga_vahini' ? 'durga_vahini' : 'bajrang_dal',
-        father_or_guardian_name: raw.father_or_guardian_name || '',
-        whatsapp_number: raw.whatsapp_number || raw.mobile || '',
-        email: raw.email || '',
-        city_village: raw.city_village || '',
-        district: raw.district || '',
-        state: raw.state || 'Gujarat',
-        pincode: raw.pincode || '',
-        education: raw.education || '',
-        profile_photo_data: raw.profile_photo_data || '',
-        identity_doc_name: raw.identity_doc_name || '',
-        has_identity_doc: Boolean(raw.has_identity_doc),
-        identity_verification_status: raw.identity_verification_status || 'Pending',
-        membership_status: raw.membership_status || 'Pending',
-        registration_date: raw.registration_date || (raw.created_at ? raw.created_at.slice(0, 10) : ''),
-      };
-      const pending = outboxMap.get(item.id);
-      if (pending) {
-        item.status = pending.status;
-        item.follow_up_notes = pending.follow_up_notes;
-        item.localSyncStatus = 'pending';
-      } else {
-        item.localSyncStatus = 'synced';
+  const decryptedList = await Promise.all(
+    envelopes.map(async (env): Promise<RegistrationItem | null> => {
+      try {
+        const raw = await decryptPayload<Partial<RegistrationItem>>(key, env.iv, env.ciphertext);
+        const item: RegistrationItem = {
+          ...(raw as RegistrationItem),
+          organization_wing: raw.organization_wing === 'durga_vahini' ? 'durga_vahini' : 'bajrang_dal',
+          father_or_guardian_name: raw.father_or_guardian_name || '',
+          whatsapp_number: raw.whatsapp_number || raw.mobile || '',
+          email: raw.email || '',
+          city_village: raw.city_village || '',
+          district: raw.district || '',
+          state: raw.state || 'Gujarat',
+          pincode: raw.pincode || '',
+          education: raw.education || '',
+          profile_photo_data: raw.profile_photo_data || '',
+          identity_doc_name: raw.identity_doc_name || '',
+          has_identity_doc: Boolean(raw.has_identity_doc),
+          identity_verification_status: raw.identity_verification_status || 'Pending',
+          membership_status: raw.membership_status || 'Pending',
+          registration_date: raw.registration_date || (raw.created_at ? raw.created_at.slice(0, 10) : ''),
+        };
+        const pending = outboxMap.get(item.id);
+        if (pending) {
+          item.status = pending.status;
+          item.follow_up_notes = pending.follow_up_notes;
+          item.localSyncStatus = 'pending';
+        } else {
+          item.localSyncStatus = 'synced';
+        }
+        return item;
+      } catch {
+        return null;
       }
-      records.push(item);
-    } catch {
-      // Skip corrupted or mismatched key records
-    }
-  }
+    })
+  );
 
+  const records = decryptedList.filter((r): r is RegistrationItem => r !== null);
   records.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   return {
@@ -276,8 +343,7 @@ export async function loadEncryptedRegistrations(adminId: string): Promise<{
 
 export async function queueOfflineMutation(mutation: PendingMutation): Promise<void> {
   const db = await openVaultDb();
-  const salt = await getOrCreateDeviceSalt(db);
-  const key = await deriveVaultKey(`jbd-vault-${mutation.adminId}`, salt);
+  const key = await getCachedAdminVaultKey(mutation.adminId, db);
 
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE_OUTBOX, STORE_RECORDS], 'readwrite');
@@ -344,6 +410,9 @@ export async function clearPendingMutations(adminId: string): Promise<void> {
 
 export async function wipeLocalAdminVault(): Promise<void> {
   const db = await openVaultDb();
+  deviceIdPromise = null;
+  deviceSaltPromise = null;
+  vaultKeyCache.clear();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE_RECORDS, STORE_OUTBOX, STORE_META], 'readwrite');
     tx.objectStore(STORE_RECORDS).clear();

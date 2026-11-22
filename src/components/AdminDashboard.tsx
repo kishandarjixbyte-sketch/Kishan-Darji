@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   RefreshCw,
   Search,
@@ -220,102 +220,162 @@ export const AdminDashboard: React.FC<Props> = ({
     setBannerMsg({ type, text });
   }, []);
 
+  const syncInFlightRef = useRef<Promise<void> | null>(null);
+  const lastSyncCompletedAtRef = useRef<number>(0);
+
   const loadLocalVault = useCallback(async () => {
     const cached = await loadEncryptedRegistrations(currentAdmin.id);
     if (cached.records.length > 0) {
       setRegistrations(cached.records);
+      setLoading(false);
     }
     setLastSyncTime(cached.lastSyncTime);
     setPendingSyncCount(cached.pendingCount);
   }, [currentAdmin.id]);
 
-  const syncWithServer = useCallback(async () => {
-    if (!navigator.onLine) {
-      await loadLocalVault();
-      setLoading(false);
-      return;
-    }
-
-    setSyncing(true);
-    try {
-      const deviceId = await getDeviceId();
-      const pending = await getPendingMutations(currentAdmin.id);
-
-      const syncRes = await fetch(buildApiUrl('/api/registrations/sync'), {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({
-          deviceId,
-          pendingUpdates: pending.map((p) => ({
-            id: p.id,
-            status: p.status,
-            follow_up_notes: p.follow_up_notes,
-            updated_at: p.updated_at,
-          })),
-        }),
-      });
-
-      if (syncRes.ok) {
-        const syncData = await syncRes.json();
-        await clearPendingMutations(currentAdmin.id);
-        await saveAuthorizedRegistrationsEncrypted(
-          currentAdmin.id,
-          syncData.registrations,
-          syncData.syncedAt
-        );
-        setRegistrations(
-          (syncData.registrations as RegistrationItem[]).map((r) => ({
-            ...r,
-            localSyncStatus: 'synced',
-          }))
-        );
-        setLastSyncTime(syncData.syncedAt);
-        setPendingSyncCount(0);
-      } else {
-        await loadLocalVault();
+  const syncWithServer = useCallback(
+    (mode?: 'full' | 'quick' | unknown) => {
+      if (syncInFlightRef.current) {
+        return syncInFlightRef.current;
       }
 
-      const [regsStatsRes, adminsRes] = await Promise.all([
-        fetch(buildApiUrl('/api/registrations'), { headers: authHeaders }),
-        fetch(buildApiUrl('/api/admins'), { headers: authHeaders }),
-      ]);
-      if (regsStatsRes.ok) {
-        const statsJson = await regsStatsRes.json();
-        if (statsJson.stats) setServerStats(statsJson.stats);
-      }
-      if (adminsRes.ok) {
-        const adminsData = await adminsRes.json();
-        setAdmins(adminsData.admins || []);
+      const isQuick = mode === 'quick';
+      const nowMs = Date.now();
+      if (isQuick && nowMs - lastSyncCompletedAtRef.current < 15_000) {
+        return Promise.resolve();
       }
 
-      if (isSuper) {
-        const [notifRes, backupsRes] = await Promise.all([
-          fetch(buildApiUrl('/api/settings/notifications'), { headers: authHeaders }),
-          fetch(buildApiUrl('/api/backups'), { headers: authHeaders }),
-        ]);
-        if (notifRes.ok) {
-          const nd = await notifRes.json();
-          setGlobalNotifyEnabled(Boolean(nd.global_enabled));
-          setExtraNumbersText((nd.extra_whatsapp_numbers || []).join(', '));
-          setWhatsappConfigured(Boolean(nd.whatsappCloudConfigured));
-          setNotificationLogs(nd.notificationLogs || []);
-          setSyncLogs(nd.syncLogs || []);
-          setAuditLogs(nd.auditLogs || []);
+      const run = (async () => {
+        if (!navigator.onLine) {
+          await loadLocalVault();
+          setLoading(false);
+          return;
         }
-        if (backupsRes.ok) {
-          const bd = await backupsRes.json();
-          setBackups(bd.backups || []);
-        }
-      }
 
-      await onRefreshPublicData();
-    } catch {
-      await loadLocalVault();
-    } finally {
-      setSyncing(false);
-      setLoading(false);
-    }
-  }, [authHeaders, currentAdmin.id, isSuper, loadLocalVault, onRefreshPublicData]);
+        setSyncing(true);
+        try {
+          const [deviceId, pending] = await Promise.all([
+            getDeviceId(),
+            getPendingMutations(currentAdmin.id),
+          ]);
+
+          const syncReq = fetch(buildApiUrl('/api/registrations/sync'), {
+            method: 'POST',
+            headers: authHeaders,
+            body: JSON.stringify({
+              deviceId,
+              manual: !isQuick,
+              pendingUpdates: pending.map((p) => ({
+                id: p.id,
+                status: p.status,
+                follow_up_notes: p.follow_up_notes,
+                updated_at: p.updated_at,
+              })),
+            }),
+          });
+
+          const adminsReq = !isQuick
+            ? fetch(buildApiUrl('/api/admins'), { headers: authHeaders })
+            : Promise.resolve(null);
+          const notifReq =
+            !isQuick && isSuper
+              ? fetch(buildApiUrl('/api/settings/notifications'), { headers: authHeaders })
+              : Promise.resolve(null);
+          const backupsReq =
+            !isQuick && isSuper
+              ? fetch(buildApiUrl('/api/backups'), { headers: authHeaders })
+              : Promise.resolve(null);
+          const publicReq = !isQuick ? onRefreshPublicData() : Promise.resolve();
+
+          const [syncRes, adminsRes, notifRes, backupsRes] = await Promise.all([
+            syncReq,
+            adminsReq,
+            notifReq,
+            backupsReq,
+            publicReq,
+          ]);
+
+          if (syncRes.ok) {
+            const syncData = await syncRes.json();
+            const syncedRecords = (syncData.registrations || []) as RegistrationItem[];
+
+            setRegistrations(
+              syncedRecords.map((r) => ({
+                ...r,
+                localSyncStatus: 'synced',
+              }))
+            );
+            if (syncData.stats) setServerStats(syncData.stats);
+            if (typeof syncData.whatsappCloudConfigured === 'boolean') {
+              setWhatsappConfigured(syncData.whatsappCloudConfigured);
+            }
+            setLastSyncTime(syncData.syncedAt);
+            setPendingSyncCount(0);
+            lastSyncCompletedAtRef.current = Date.now();
+
+            // Persist local offline vault incrementally without blocking UI responsiveness
+            void (async () => {
+              try {
+                if (pending.length > 0) {
+                  await clearPendingMutations(currentAdmin.id);
+                }
+                await saveAuthorizedRegistrationsEncrypted(
+                  currentAdmin.id,
+                  syncedRecords,
+                  syncData.syncedAt
+                );
+              } catch {
+                // non-fatal offline vault background write
+              }
+            })();
+          } else {
+            await loadLocalVault();
+          }
+
+          const parsePromises: Promise<void>[] = [];
+          if (adminsRes?.ok) {
+            parsePromises.push(
+              adminsRes.json().then((adminsData) => {
+                setAdmins(adminsData.admins || []);
+              })
+            );
+          }
+          if (notifRes?.ok) {
+            parsePromises.push(
+              notifRes.json().then((nd) => {
+                setGlobalNotifyEnabled(Boolean(nd.global_enabled));
+                setExtraNumbersText((nd.extra_whatsapp_numbers || []).join(', '));
+                setWhatsappConfigured(Boolean(nd.whatsappCloudConfigured));
+                setNotificationLogs(nd.notificationLogs || []);
+                setSyncLogs(nd.syncLogs || []);
+                setAuditLogs(nd.auditLogs || []);
+              })
+            );
+          }
+          if (backupsRes?.ok) {
+            parsePromises.push(
+              backupsRes.json().then((bd) => {
+                setBackups(bd.backups || []);
+              })
+            );
+          }
+          if (parsePromises.length > 0) {
+            await Promise.all(parsePromises);
+          }
+        } catch {
+          await loadLocalVault();
+        } finally {
+          setSyncing(false);
+          setLoading(false);
+          syncInFlightRef.current = null;
+        }
+      })();
+
+      syncInFlightRef.current = run;
+      return run;
+    },
+    [authHeaders, currentAdmin.id, isSuper, loadLocalVault, onRefreshPublicData]
+  );
 
   useEffect(() => {
     void loadLocalVault().finally(() => {
@@ -325,17 +385,17 @@ export const AdminDashboard: React.FC<Props> = ({
 
   useEffect(() => {
     if (!isOnline) return;
-    void syncWithServer();
+    void syncWithServer('full');
 
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
-        void syncWithServer();
+        void syncWithServer('quick');
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
     const interval = window.setInterval(() => {
-      if (navigator.onLine) void syncWithServer();
-    }, 25000);
+      if (navigator.onLine) void syncWithServer('quick');
+    }, 60_000);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
@@ -766,12 +826,19 @@ export const AdminDashboard: React.FC<Props> = ({
     }
   };
 
-  const openWhatsAppContact = (reg: RegistrationItem) => {
+  const getMemberWhatsAppHref = (reg: RegistrationItem): string => {
+    const raw = (reg.whatsapp_number || reg.mobile || '').replace(/\D/g, '');
+    const normalized =
+      raw.length === 11 && raw.startsWith('0')
+        ? `91${raw.slice(1)}`
+        : raw.length === 10
+          ? `91${raw}`
+          : raw;
     const wing = reg.organization_wing === 'durga_vahini' ? 'Durga Vahini' : 'Bajrang Dal';
     const msg = encodeURIComponent(
       `Namaste ${reg.full_name}, regarding your ${wing} registration (ID: ${reg.registration_code}).`
     );
-    window.open(`https://wa.me/91${reg.whatsapp_number || reg.mobile}?text=${msg}`, '_blank', 'noopener,noreferrer');
+    return normalized.length >= 10 ? `https://wa.me/${normalized}?text=${msg}` : '#';
   };
 
   const navTabs: Array<{ id: DashboardTab; label: string; icon: React.ComponentType<{ className?: string }>; superOnly?: boolean }> = [
@@ -1148,14 +1215,15 @@ export const AdminDashboard: React.FC<Props> = ({
                                 >
                                   <BadgeCheck className="w-4 h-4" />
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openWhatsAppContact(reg)}
-                                  title="WhatsApp"
-                                  className="p-2 rounded-lg text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer"
+                                <a
+                                  href={getMemberWhatsAppHref(reg)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Message on WhatsApp"
+                                  className="p-2 rounded-lg text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 inline-flex items-center justify-center"
                                 >
                                   <MessageCircle className="w-4 h-4" />
-                                </button>
+                                </a>
                                 {canManage ? (
                                   <button
                                     type="button"
@@ -1222,6 +1290,15 @@ export const AdminDashboard: React.FC<Props> = ({
                             <BadgeCheck className="w-4 h-4" />
                             <span>{canManage ? 'Profile & Doc' : 'View Profile'}</span>
                           </button>
+                          <a
+                            href={getMemberWhatsAppHref(reg)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-h-[40px] px-3 rounded-xl border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 text-xs font-semibold inline-flex items-center justify-center gap-1"
+                          >
+                            <MessageCircle className="w-4 h-4" />
+                            <span>WhatsApp</span>
+                          </a>
                           {canManage && (
                             <button
                               type="button"

@@ -334,7 +334,10 @@ function normalizeRegistrationRow(
     profile_photo_data: String(raw.profile_photo_data || ''),
     ...(includePrivateDoc ? { identity_doc_data: docData } : {}),
     identity_doc_name: String(raw.identity_doc_name || ''),
-    has_identity_doc: docData.length > 0,
+    has_identity_doc:
+      raw.has_identity_doc_flag !== undefined
+        ? Number(raw.has_identity_doc_flag) > 0
+        : docData.length > 0,
     identity_verification_status:
       (raw.identity_verification_status as IdentityVerificationStatus) || 'Pending',
     membership_status: (raw.membership_status as MembershipStatus) || 'Pending',
@@ -553,6 +556,7 @@ async function getSqlite(): Promise<SqliteSyncInstance> {
       const dbPath = path.join(dataDir, 'join_bajrang_dal.db');
       const db = new DatabaseSync(dbPath) as unknown as SqliteSyncInstance;
       db.exec('PRAGMA journal_mode = WAL;');
+      db.exec('PRAGMA synchronous = NORMAL;');
       db.exec('PRAGMA foreign_keys = ON;');
       db.exec(`
         CREATE TABLE IF NOT EXISTS admins (
@@ -817,6 +821,51 @@ async function getSqlite(): Promise<SqliteSyncInstance> {
         } catch (migrationErr) {
           db.exec('ROLLBACK;');
           throw migrationErr;
+        } finally {
+          db.exec('PRAGMA foreign_keys = ON;');
+        }
+      }
+
+      // Upgrade legacy NOT NULL constraint on notification_logs.registration_id so manual/campaign logs work
+      const notifCols = db.prepare('PRAGMA table_info(notification_logs)').all() as Array<{
+        name: string;
+        notnull: number;
+      }>;
+      const notifRegCol = notifCols.find((c) => c.name === 'registration_id');
+      if (notifRegCol && notifRegCol.notnull === 1) {
+        db.exec('PRAGMA foreign_keys = OFF;');
+        db.exec('BEGIN TRANSACTION;');
+        try {
+          db.exec(`
+            CREATE TABLE notification_logs_migrated (
+              id TEXT PRIMARY KEY,
+              registration_id TEXT REFERENCES registrations(id) ON DELETE CASCADE,
+              admin_id TEXT REFERENCES admins(id) ON DELETE SET NULL,
+              recipient_whatsapp TEXT NOT NULL,
+              language TEXT NOT NULL DEFAULT 'en',
+              message_type TEXT NOT NULL DEFAULT 'registration_alert',
+              message_preview TEXT NOT NULL,
+              provider_message_id TEXT,
+              delivery_status TEXT NOT NULL CHECK (delivery_status IN ('sent', 'delivered', 'failed', 'skipped_disabled', 'queued_unconfigured')),
+              error_message TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            INSERT INTO notification_logs_migrated (
+              id, registration_id, admin_id, recipient_whatsapp, language, message_type,
+              message_preview, provider_message_id, delivery_status, error_message, created_at
+            )
+            SELECT
+              id, registration_id, admin_id, recipient_whatsapp,
+              COALESCE(language, 'en'), COALESCE(message_type, 'registration_alert'),
+              message_preview, provider_message_id, delivery_status, error_message, created_at
+            FROM notification_logs;
+            DROP TABLE notification_logs;
+            ALTER TABLE notification_logs_migrated RENAME TO notification_logs;
+          `);
+          db.exec('COMMIT;');
+        } catch (notifMigErr) {
+          db.exec('ROLLBACK;');
+          throw notifMigErr;
         } finally {
           db.exec('PRAGMA foreign_keys = ON;');
         }
@@ -1636,7 +1685,16 @@ export async function listRegistrationsForAdmin(
   const sqlite = await getSqlite();
   const rows = sqlite
     .prepare(`
-      SELECT r.*, a.full_name as assigned_admin_name
+      SELECT
+        r.id, r.registration_code, r.organization_wing, r.full_name, r.father_or_guardian_name,
+        r.mobile, r.whatsapp_number, r.email, r.age, r.dob, r.full_address, r.city_village,
+        r.district, r.state, r.pincode, r.occupation, r.education, r.profile_photo_data,
+        r.identity_doc_name,
+        CASE WHEN LENGTH(COALESCE(r.identity_doc_data, '')) > 0 THEN 1 ELSE 0 END as has_identity_doc_flag,
+        r.identity_verification_status, r.membership_status, r.registration_date, r.status,
+        r.assigned_admin_id, a.full_name as assigned_admin_name,
+        r.follow_up_notes, r.privacy_consent, r.whatsapp_consent, r.source,
+        r.created_at, r.updated_at
       FROM registrations r
       LEFT JOIN admins a ON r.assigned_admin_id = a.id
       ORDER BY r.created_at DESC
@@ -3055,6 +3113,35 @@ export async function getNotificationLogEntry(
   const row = sqlite
     .prepare('SELECT id, delivery_status FROM notification_logs WHERE registration_id = ? AND recipient_whatsapp = ?')
     .get(registrationId, recipientWhatsapp) as { id: string; delivery_status: string } | undefined;
+  return row ?? null;
+}
+
+export async function getNotificationLogById(logId: string): Promise<NotificationLogRecord | null> {
+  await ensureInitialized();
+  if (isSupabaseConfigured()) {
+    const rows = await supabaseFetch<Array<Record<string, unknown>>>(
+      `notification_logs?select=*&id=eq.${encodeURIComponent(logId)}&limit=1`
+    );
+    const nl = rows[0];
+    if (!nl) return null;
+    return {
+      id: String(nl.id),
+      registration_id: nl.registration_id ? String(nl.registration_id) : null,
+      admin_id: nl.admin_id ? String(nl.admin_id) : null,
+      recipient_whatsapp: String(nl.recipient_whatsapp),
+      language: String(nl.language || 'en'),
+      message_type: String(nl.message_type || 'registration_alert'),
+      message_preview: String(nl.message_preview),
+      provider_message_id: nl.provider_message_id ? String(nl.provider_message_id) : null,
+      delivery_status: nl.delivery_status as DeliveryStatus,
+      error_message: nl.error_message ? String(nl.error_message) : null,
+      created_at: String(nl.created_at),
+    };
+  }
+  const sqlite = await getSqlite();
+  const row = sqlite.prepare('SELECT * FROM notification_logs WHERE id = ?').get(logId) as
+    | NotificationLogRecord
+    | undefined;
   return row ?? null;
 }
 

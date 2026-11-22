@@ -17,6 +17,7 @@ import {
   getAdminByIdRaw,
   getBackupById,
   getEventByIdOrSlug,
+  getNotificationLogById,
   getNotificationSettings,
   getRegistrationById,
   getThemeSettings,
@@ -63,7 +64,9 @@ import {
   dispatchConsentBasedCampaignMessages,
   dispatchMemberConfirmationMessage,
   dispatchRegistrationNotifications,
+  isValidWhatsAppNumber,
   normalizeWhatsAppNumber,
+  retryWhatsAppNotificationLog,
   type WhatsAppLanguage,
   type WhatsAppTemplateType,
 } from './whatsapp.ts';
@@ -967,7 +970,12 @@ export function createApiApp() {
         return true;
       });
 
-      res.json({ registrations: filtered, stats, serverTime: new Date().toISOString() });
+      res.json({
+        registrations: filtered,
+        stats,
+        whatsappCloudConfigured: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
+        serverTime: new Date().toISOString(),
+      });
     } catch (err) {
       next(err);
     }
@@ -1178,8 +1186,9 @@ export function createApiApp() {
   app.post('/api/registrations/sync', requireAdmin, async (req: AuthenticatedRequest, res, next) => {
     try {
       const admin = req.admin!;
-      const { deviceId, pendingUpdates } = (req.body || {}) as {
+      const { deviceId, pendingUpdates, manual } = (req.body || {}) as {
         deviceId?: string;
+        manual?: boolean;
         pendingUpdates?: Array<{
           id: string;
           status?: RegistrationStatus;
@@ -1191,7 +1200,7 @@ export function createApiApp() {
       let pushedCount = 0;
       const now = new Date().toISOString();
 
-      if (Array.isArray(pendingUpdates)) {
+      if (Array.isArray(pendingUpdates) && pendingUpdates.length > 0) {
         for (const item of pendingUpdates) {
           if (!item?.id) continue;
           const reg = await getRegistrationById(item.id);
@@ -1210,14 +1219,44 @@ export function createApiApp() {
         }
       }
 
-      const authorizedRecords = await listRegistrationsForAdmin(admin);
-      await recordSyncLog(admin.id, deviceId || 'mobile-pwa', authorizedRecords.length, pushedCount);
+      const [authorizedRecords, events, totalEventRegistrations] = await Promise.all([
+        listRegistrationsForAdmin(admin),
+        listEventsWithStats(),
+        listAllEventRegistrationsCount(),
+      ]);
+
+      if (pushedCount > 0 || manual) {
+        void recordSyncLog(admin.id, deviceId || 'mobile-pwa', authorizedRecords.length, pushedCount).catch(() => {
+          // non-blocking sync log write
+        });
+      }
+
+      const todayPrefix = now.slice(0, 10);
+      const upcomingEventsCount = events.filter((e) => e.event_date >= todayPrefix).length;
+      const stats = {
+        total: authorizedRecords.length,
+        bajrangDalCount: authorizedRecords.filter((r) => r.organization_wing === 'bajrang_dal').length,
+        durgaVahiniCount: authorizedRecords.filter((r) => r.organization_wing === 'durga_vahini').length,
+        totalEvents: events.length,
+        upcomingEvents: upcomingEventsCount,
+        totalEventRegistrations,
+        pendingMembershipCount: authorizedRecords.filter((r) => r.membership_status === 'Pending').length,
+        approvedMembershipCount: authorizedRecords.filter((r) => r.membership_status === 'Approved').length,
+        rejectedMembershipCount: authorizedRecords.filter((r) => r.membership_status === 'Rejected').length,
+        today: authorizedRecords.filter((r) => r.created_at.startsWith(todayPrefix)).length,
+        newCount: authorizedRecords.filter((r) => r.status === 'New').length,
+        contactedCount: authorizedRecords.filter((r) => r.status === 'Contacted').length,
+        followUpCount: authorizedRecords.filter((r) => r.status === 'Follow-up').length,
+        completedCount: authorizedRecords.filter((r) => r.status === 'Completed').length,
+      };
 
       res.json({
         syncedAt: now,
         pushedCount,
         pulledCount: authorizedRecords.length,
         registrations: authorizedRecords,
+        stats,
+        whatsappCloudConfigured: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
       });
     } catch (err) {
       next(err);
@@ -1234,6 +1273,7 @@ export function createApiApp() {
         templateType?: WhatsAppTemplateType;
         customMessage?: string;
         eventId?: string;
+        allowDuplicate?: boolean;
         recipients?: Array<{
           registrationId?: string | null;
           registrationCode?: string;
@@ -1255,29 +1295,61 @@ export function createApiApp() {
           ? body.templateType
           : 'custom';
 
+      const customMessage = typeof body.customMessage === 'string' ? body.customMessage.trim() : '';
+      if (templateType === 'custom' && !customMessage) {
+        return res.status(400).json({
+          error: 'Please write a custom message before sending.',
+        });
+      }
+
       const recipientsList = Array.isArray(body.recipients) ? body.recipients : [];
       if (recipientsList.length === 0) {
-        return res.status(400).json({ error: 'Please select at least one opted-in recipient.' });
+        return res.status(400).json({
+          error: 'Please select at least one opted-in member or add a valid WhatsApp phone number.',
+        });
+      }
+      if (recipientsList.length > 200) {
+        return res.status(400).json({
+          error: 'Please send to at most 200 recipients per batch to prevent timeouts.',
+        });
+      }
+
+      const hasEligibleRecipient = recipientsList.some(
+        (r) => r && r.whatsappConsent === true && isValidWhatsAppNumber(String(r.whatsappNumber || ''))
+      );
+      if (!hasEligibleRecipient) {
+        return res.status(400).json({
+          error: 'No eligible WhatsApp recipients found. Ensure numbers are valid (10 digits or with country code) and WhatsApp consent is confirmed.',
+        });
       }
 
       const ev = body.eventId ? await getEventByIdOrSlug(body.eventId) : null;
-      const results = await dispatchConsentBasedCampaignMessages({
+      const { results, summary } = await dispatchConsentBasedCampaignMessages({
         actorAdminId: req.admin!.id,
         language,
         templateType,
-        customMessage: body.customMessage || '',
+        customMessage,
         eventTitle: ev?.title,
         eventDate: ev ? `${ev.event_date} ${ev.event_time}` : undefined,
         eventVenue: ev ? `${ev.venue}${ev.location_city ? `, ${ev.location_city}` : ''}` : undefined,
+        allowDuplicate: body.allowDuplicate === true,
         recipients: recipientsList,
       });
 
       await writeAuditLog(req.admin!.id, 'WHATSAPP_CAMPAIGN_SEND', 'notification_logs', templateType, {
         language,
-        sent_or_queued: results.length,
+        processed: summary.processed,
+        sent: summary.sentCount,
+        direct_ready: summary.directReadyCount,
+        failed: summary.failedCount,
+        skipped_duplicates: summary.skippedDuplicateCount,
       });
 
-      res.json({ results });
+      res.json({
+        results,
+        summary,
+        whatsappConfigured: Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
+      });
     } catch (err) {
       next(err);
     }
@@ -1517,6 +1589,23 @@ export function createApiApp() {
       const dashboardUrl = `${getAppBaseUrl(req)}/?view=admin`;
       const results = await dispatchRegistrationNotifications(reg, dashboardUrl);
       res.json({ results });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/whatsapp/logs/:logId/retry', requireAdmin, requireSuperAdmin, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const log = await getNotificationLogById(req.params.logId);
+      if (!log) {
+        return res.status(404).json({ error: 'Notification log entry not found.' });
+      }
+      const outcome = await retryWhatsAppNotificationLog(log);
+      await writeAuditLog(req.admin!.id, 'RETRY_WHATSAPP_LOG', 'notification_logs', log.id, {
+        recipient: log.recipient_whatsapp,
+        status: outcome.status,
+      });
+      res.json(outcome);
     } catch (err) {
       next(err);
     }

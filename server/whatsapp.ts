@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import {
   getAdminByIdRaw,
   getEnabledAlertSuperAdmins,
@@ -5,6 +6,7 @@ import {
   getNotificationSettings,
   saveNotificationLogEntry,
   type DeliveryStatus,
+  type NotificationLogRecord,
   type RegistrationRecord,
 } from './db.ts';
 
@@ -16,10 +18,43 @@ export type WhatsAppTemplateType =
   | 'membership_update'
   | 'custom';
 
+export type CampaignRecipientStatus =
+  | DeliveryStatus
+  | 'skipped_duplicate'
+  | 'skipped_invalid'
+  | 'skipped_no_consent';
+
+const DUPLICATE_GUARD_TTL_MS = 60_000;
+const recentCampaignDispatches = new Map<string, number>();
+
+function pruneRecentDispatchCache(now: number): void {
+  if (recentCampaignDispatches.size < 200) return;
+  for (const [key, expiresAt] of recentCampaignDispatches.entries()) {
+    if (expiresAt <= now) {
+      recentCampaignDispatches.delete(key);
+    }
+  }
+}
+
 export function normalizeWhatsAppNumber(input: string): string {
-  const digits = input.replace(/\D/g, '');
-  if (digits.length === 10) return `91${digits}`;
+  const digits = String(input || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return `91${digits.slice(1)}`;
+  }
+  if (digits.length === 10) {
+    return `91${digits}`;
+  }
   return digits;
+}
+
+export function isValidWhatsAppNumber(input: string): boolean {
+  const normalized = normalizeWhatsAppNumber(input);
+  if (!/^[1-9]\d{9,14}$/.test(normalized)) return false;
+  if (normalized.length === 12 && normalized.startsWith('91')) {
+    return /^91[6-9]\d{9}$/.test(normalized);
+  }
+  return true;
 }
 
 export function buildRegistrationWhatsAppMessage(
@@ -60,23 +95,30 @@ export function buildMultilingualWhatsAppMessage(params: {
   eventVenue?: string;
   membershipStatus?: string;
 }): string {
-  const name = params.recipientName || 'Member';
-  const code = params.registrationCode || '';
-  const wing = params.wingLabel || 'Bajrang Dal / VHP';
-  const evTitle = params.eventTitle || 'Upcoming Organization Program';
-  const evDate = params.eventDate || '';
-  const evVenue = params.eventVenue || '';
-  const status = params.membershipStatus || 'Updated';
+  const name = params.recipientName?.trim() || 'Member';
+  const code = params.registrationCode?.trim() || '';
+  const wing = params.wingLabel?.trim() || 'Bajrang Dal / VHP';
+  const evTitle = params.eventTitle?.trim() || 'Upcoming Organization Program';
+  const evDate = params.eventDate?.trim() || '';
+  const evVenue = params.eventVenue?.trim() || '';
+  const status = params.membershipStatus?.trim() || 'Updated';
 
-  if (params.templateType === 'custom' && params.customMessage?.trim()) {
-    return params.customMessage
+  const applyPlaceholders = (raw: string): string =>
+    raw
       .replace(/\{name\}/gi, name)
-      .replace(/\{code\}/gi, code)
+      .replace(/\{code\}/gi, code || 'N/A')
       .replace(/\{wing\}/gi, wing)
       .replace(/\{event_title\}/gi, evTitle)
-      .replace(/\{event_date\}/gi, evDate)
-      .replace(/\{venue\}/gi, evVenue)
-      .trim();
+      .replace(/\{event_date\}/gi, evDate || 'TBA')
+      .replace(/\{venue\}/gi, evVenue || 'District Office')
+      .replace(/\{status\}/gi, status);
+
+  const customNote = params.customMessage?.trim()
+    ? applyPlaceholders(params.customMessage.trim())
+    : '';
+
+  if (params.templateType === 'custom') {
+    return customNote;
   }
 
   const templates: Record<WhatsAppLanguage, Record<Exclude<WhatsAppTemplateType, 'custom'>, string>> = {
@@ -87,7 +129,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `કાર્યક્રમ: ${evTitle}`,
         evDate ? `તારીખ: ${evDate}` : '',
         evVenue ? `સ્થળ: ${evVenue}` : '',
-        params.customMessage ? `\n${params.customMessage}` : '',
+        customNote ? `\n${customNote}` : '',
         `\nસંપર્ક અને રજીસ્ટ્રેશન માટે સત્તાવાર પોર્ટલની મુલાકાત લો.`,
       ]
         .filter(Boolean)
@@ -96,6 +138,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `નમસ્તે ${name},`,
         `${wing} માં તમારી નોંધણી સફળતાપૂર્વક પ્રાપ્ત થઈ છે.`,
         code ? `રજીસ્ટ્રેશન નંબર: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
         `તમારા સભ્યપદ અંગેની આગળની પુષ્ટિ અને સૂચના તમને WhatsApp સંદેશ દ્વારા મળશે.`,
       ]
         .filter(Boolean)
@@ -106,13 +149,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         evDate ? `તારીખ: ${evDate}` : '',
         evVenue ? `સ્થળ: ${evVenue}` : '',
         code ? `તમારો પાસ નંબર: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `જય શ્રી રામ ${name},`,
         `${wing} સભ્યપદ અરજી (${code || 'Ref'}) ની વર્તમાન સ્થિતિ: ${status}.`,
-        params.customMessage ? params.customMessage : 'વધુ સૂચનાઓ તમને આ નંબર પર સંદેશ દ્વારા મોકલવામાં આવશે.',
+        customNote || 'વધુ સૂચનાઓ તમને આ નંબર પર સંદેશ દ્વારા મોકલવામાં આવશે.',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -124,7 +168,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `कार्यक्रम: ${evTitle}`,
         evDate ? `दिनांक: ${evDate}` : '',
         evVenue ? `स्थान: ${evVenue}` : '',
-        params.customMessage ? `\n${params.customMessage}` : '',
+        customNote ? `\n${customNote}` : '',
         `\nअधिक जानकारी एवं पंजीकरण के लिए आधिकारिक पोर्टल देखें।`,
       ]
         .filter(Boolean)
@@ -133,6 +177,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `नमस्ते ${name},`,
         `${wing} में आपका पंजीकरण सफलतापूर्वक दर्ज कर लिया गया है।`,
         code ? `पंजीकरण क्रमांक: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
         `आपके पंजीकरण की आगे की पुष्टि और सूचना WhatsApp संदेश द्वारा भेजी जाएगी।`,
       ]
         .filter(Boolean)
@@ -143,13 +188,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         evDate ? `दिनांक: ${evDate}` : '',
         evVenue ? `स्थान: ${evVenue}` : '',
         code ? `पास क्रमांक: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `जय श्री राम ${name},`,
         `${wing} सदस्यता आवेदन (${code || 'Ref'}) की अद्यतन स्थिति: ${status}.`,
-        params.customMessage ? params.customMessage : 'अन्य आवश्यक जानकारी संदेश द्वारा भेजी जाएगी।',
+        customNote || 'अन्य आवश्यक जानकारी संदेश द्वारा भेजी जाएगी।',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -161,7 +207,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `Event: ${evTitle}`,
         evDate ? `Date: ${evDate}` : '',
         evVenue ? `Venue: ${evVenue}` : '',
-        params.customMessage ? `\n${params.customMessage}` : '',
+        customNote ? `\n${customNote}` : '',
         `\nPlease check the official portal for registration and details.`,
       ]
         .filter(Boolean)
@@ -170,6 +216,7 @@ export function buildMultilingualWhatsAppMessage(params: {
         `Namaste ${name},`,
         `Your registration with ${wing} has been received successfully.`,
         code ? `Reference ID: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
         `You will receive further membership confirmation updates directly via message.`,
       ]
         .filter(Boolean)
@@ -180,13 +227,14 @@ export function buildMultilingualWhatsAppMessage(params: {
         evDate ? `Date: ${evDate}` : '',
         evVenue ? `Venue: ${evVenue}` : '',
         code ? `Pass Ref: ${code}` : '',
+        customNote ? `\n${customNote}` : '',
       ]
         .filter(Boolean)
         .join('\n'),
       membership_update: [
         `Namaste ${name},`,
         `Your ${wing} membership application (${code || 'Ref'}) status is now: ${status}.`,
-        params.customMessage ? params.customMessage : 'Thank you for registering with our organization.',
+        customNote || 'Thank you for registering with our organization.',
       ]
         .filter(Boolean)
         .join('\n'),
@@ -194,8 +242,7 @@ export function buildMultilingualWhatsAppMessage(params: {
   };
 
   const langSet = templates[params.language] || templates.en;
-  const tplKey = params.templateType === 'custom' ? 'membership_update' : params.templateType;
-  return langSet[tplKey] || params.customMessage || '';
+  return langSet[params.templateType] || customNote;
 }
 
 interface NotificationDispatchResult {
@@ -206,7 +253,7 @@ interface NotificationDispatchResult {
   waMeUrl?: string;
 }
 
-async function sendSingleWhatsAppMessage(
+export async function sendSingleWhatsAppMessage(
   recipient: string,
   messageText: string
 ): Promise<{
@@ -214,6 +261,21 @@ async function sendSingleWhatsAppMessage(
   providerMessageId?: string;
   errorMessage?: string;
 }> {
+  const normalized = normalizeWhatsAppNumber(recipient);
+  if (!isValidWhatsAppNumber(normalized)) {
+    return {
+      status: 'failed',
+      errorMessage: 'Invalid WhatsApp phone number. Enter a valid 10-digit Indian mobile or international number with country code.',
+    };
+  }
+
+  if (!messageText.trim()) {
+    return {
+      status: 'failed',
+      errorMessage: 'Cannot send an empty WhatsApp message.',
+    };
+  }
+
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN?.trim();
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim();
   const apiVersion = process.env.WHATSAPP_API_VERSION?.trim() || 'v21.0';
@@ -221,7 +283,8 @@ async function sendSingleWhatsAppMessage(
   if (!accessToken || !phoneNumberId) {
     return {
       status: 'queued_unconfigured',
-      errorMessage: 'WhatsApp Cloud API credentials not configured; use direct WhatsApp link or configure Meta API tokens.',
+      errorMessage:
+        'WhatsApp Cloud API credentials are not configured on the server; use the Direct Open WA button to send via WhatsApp App/Web.',
     };
   }
 
@@ -237,24 +300,64 @@ async function sendSingleWhatsAppMessage(
         body: JSON.stringify({
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: recipient,
+          to: normalized,
           type: 'text',
           text: { preview_url: false, body: messageText },
         }),
+        signal: AbortSignal.timeout(12_000),
       }
     );
 
-    const data = (await res.json()) as {
+    const rawText = await res.text();
+    let data: {
       messages?: Array<{ id: string }>;
-      error?: { message: string };
-    };
+      error?: { message?: string; error_user_msg?: string; code?: number };
+    } = {};
+    try {
+      data = JSON.parse(rawText) as typeof data;
+    } catch {
+      // keep empty data if non-JSON response
+    }
 
     if (res.ok && data.messages?.[0]?.id) {
       return { status: 'sent', providerMessageId: data.messages[0].id };
     }
-    return { status: 'failed', errorMessage: data.error?.message || `HTTP ${res.status}` };
+
+    if (res.status === 401 || res.status === 403) {
+      return {
+        status: 'failed',
+        errorMessage:
+          data.error?.error_user_msg ||
+          data.error?.message ||
+          'WhatsApp Cloud API token is invalid or expired. Renew WHATSAPP_ACCESS_TOKEN or use Direct Open WA.',
+      };
+    }
+
+    if (res.status === 429) {
+      return {
+        status: 'failed',
+        errorMessage: 'WhatsApp rate limit reached. Wait a few seconds and retry failed messages.',
+      };
+    }
+
+    return {
+      status: 'failed',
+      errorMessage:
+        data.error?.error_user_msg ||
+        data.error?.message ||
+        `Meta Cloud API returned HTTP ${res.status}. Check number format and template policy.`,
+    };
   } catch (err) {
-    return { status: 'failed', errorMessage: err instanceof Error ? err.message : 'Network error' };
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      return {
+        status: 'failed',
+        errorMessage: 'WhatsApp Cloud API request timed out after 12 seconds. Check internet connection and retry.',
+      };
+    }
+    return {
+      status: 'failed',
+      errorMessage: err instanceof Error ? `Network error: ${err.message}` : 'Network error reaching WhatsApp Cloud API.',
+    };
   }
 }
 
@@ -271,7 +374,10 @@ export async function dispatchRegistrationNotifications(
   if (reg.assigned_admin_id) {
     const assigned = await getAdminByIdRaw(reg.assigned_admin_id);
     if (assigned && assigned.is_active === 1 && assigned.notifications_enabled === 1 && assigned.whatsapp_number) {
-      recipients.set(normalizeWhatsAppNumber(assigned.whatsapp_number), assigned.id);
+      const normalized = normalizeWhatsAppNumber(assigned.whatsapp_number);
+      if (isValidWhatsAppNumber(normalized)) {
+        recipients.set(normalized, assigned.id);
+      }
     }
   }
 
@@ -279,7 +385,7 @@ export async function dispatchRegistrationNotifications(
   for (const adm of enabledAdmins) {
     if (adm.whatsapp_number) {
       const normalized = normalizeWhatsAppNumber(adm.whatsapp_number);
-      if (!recipients.has(normalized)) {
+      if (isValidWhatsAppNumber(normalized) && !recipients.has(normalized)) {
         recipients.set(normalized, adm.id);
       }
     }
@@ -287,7 +393,7 @@ export async function dispatchRegistrationNotifications(
 
   for (const num of extraNumbers) {
     const normalized = normalizeWhatsAppNumber(num);
-    if (normalized.length >= 10 && !recipients.has(normalized)) {
+    if (isValidWhatsAppNumber(normalized) && !recipients.has(normalized)) {
       recipients.set(normalized, null);
     }
   }
@@ -355,11 +461,12 @@ export async function dispatchMemberConfirmationMessage(
     membershipStatus: reg.membership_status,
   });
   const normalized = normalizeWhatsAppNumber(reg.whatsapp_number || reg.mobile);
-  const waMeUrl = normalized.length >= 10
+  const validPhone = isValidWhatsAppNumber(normalized);
+  const waMeUrl = validPhone
     ? `https://wa.me/${normalized}?text=${encodeURIComponent(messageText)}`
     : '';
 
-  if (reg.whatsapp_consent !== 1 || normalized.length < 10) {
+  if (reg.whatsapp_consent !== 1 || !validPhone) {
     return {
       status: 'skipped_disabled',
       recipient: normalized,
@@ -390,6 +497,27 @@ export async function dispatchMemberConfirmationMessage(
   };
 }
 
+export interface CampaignRecipientResult {
+  fullName: string;
+  recipient: string;
+  status: CampaignRecipientStatus;
+  messageText: string;
+  waMeUrl: string;
+  providerMessageId?: string;
+  error?: string;
+}
+
+export interface CampaignDispatchSummary {
+  totalRequested: number;
+  processed: number;
+  sentCount: number;
+  directReadyCount: number;
+  failedCount: number;
+  skippedDuplicateCount: number;
+  skippedInvalidCount: number;
+  skippedNoConsentCount: number;
+}
+
 export async function dispatchConsentBasedCampaignMessages(params: {
   actorAdminId: string;
   language: WhatsAppLanguage;
@@ -398,6 +526,7 @@ export async function dispatchConsentBasedCampaignMessages(params: {
   eventTitle?: string;
   eventDate?: string;
   eventVenue?: string;
+  allowDuplicate?: boolean;
   recipients: Array<{
     registrationId?: string | null;
     registrationCode?: string;
@@ -407,38 +536,62 @@ export async function dispatchConsentBasedCampaignMessages(params: {
     membershipStatus?: string;
     whatsappConsent: boolean;
   }>;
-}): Promise<
-  Array<{
-    fullName: string;
-    recipient: string;
-    status: DeliveryStatus;
-    messageText: string;
-    waMeUrl: string;
-    error?: string;
-  }>
-> {
-  const results: Array<{
-    fullName: string;
-    recipient: string;
-    status: DeliveryStatus;
-    messageText: string;
-    waMeUrl: string;
-    error?: string;
-  }> = [];
+}): Promise<{
+  results: CampaignRecipientResult[];
+  summary: CampaignDispatchSummary;
+}> {
+  const results: CampaignRecipientResult[] = [];
+  const seenNumbersInBatch = new Set<string>();
+  const now = Date.now();
+  pruneRecentDispatchCache(now);
+
+  const summary: CampaignDispatchSummary = {
+    totalRequested: params.recipients.length,
+    processed: 0,
+    sentCount: 0,
+    directReadyCount: 0,
+    failedCount: 0,
+    skippedDuplicateCount: 0,
+    skippedInvalidCount: 0,
+    skippedNoConsentCount: 0,
+  };
 
   for (const r of params.recipients) {
+    const cleanName = r.fullName?.trim() || 'Recipient';
+    const normalized = normalizeWhatsAppNumber(r.whatsappNumber);
+
     // Enforce opt-in consent and opt-out protection
     if (!r.whatsappConsent) {
+      summary.skippedNoConsentCount++;
+      results.push({
+        fullName: cleanName,
+        recipient: normalized || r.whatsappNumber,
+        status: 'skipped_no_consent',
+        messageText: '',
+        waMeUrl: '',
+        error: 'WhatsApp consent not granted.',
+      });
       continue;
     }
-    const normalized = normalizeWhatsAppNumber(r.whatsappNumber);
-    if (normalized.length < 10) continue;
+
+    if (!isValidWhatsAppNumber(normalized)) {
+      summary.skippedInvalidCount++;
+      results.push({
+        fullName: cleanName,
+        recipient: r.whatsappNumber,
+        status: 'skipped_invalid',
+        messageText: '',
+        waMeUrl: '',
+        error: 'Invalid phone number format (must be a valid 10-digit Indian mobile or international number).',
+      });
+      continue;
+    }
 
     const messageText = buildMultilingualWhatsAppMessage({
       language: params.language,
       templateType: params.templateType,
       customMessage: params.customMessage,
-      recipientName: r.fullName,
+      recipientName: cleanName,
       registrationCode: r.registrationCode,
       wingLabel: r.wingLabel,
       eventTitle: params.eventTitle,
@@ -447,7 +600,45 @@ export async function dispatchConsentBasedCampaignMessages(params: {
       membershipStatus: r.membershipStatus,
     });
 
+    const waMeUrl = `https://wa.me/${normalized}?text=${encodeURIComponent(messageText)}`;
+
+    // 1. Within-batch deduplication so the same phone is never messaged twice in one send
+    if (seenNumbersInBatch.has(normalized)) {
+      summary.skippedDuplicateCount++;
+      results.push({
+        fullName: cleanName,
+        recipient: normalized,
+        status: 'skipped_duplicate',
+        messageText,
+        waMeUrl,
+        error: 'Duplicate phone number in this recipient list was automatically skipped.',
+      });
+      continue;
+    }
+    seenNumbersInBatch.add(normalized);
+
+    // 2. Short-window duplicate protection across rapid double-submits
+    const msgHash = crypto.createHash('sha256').update(messageText).digest('hex').slice(0, 16);
+    const cacheKey = `${params.actorAdminId}:${normalized}:${msgHash}`;
+    const recentExpiresAt = recentCampaignDispatches.get(cacheKey);
+    if (!params.allowDuplicate && recentExpiresAt && recentExpiresAt > now) {
+      summary.skippedDuplicateCount++;
+      results.push({
+        fullName: cleanName,
+        recipient: normalized,
+        status: 'skipped_duplicate',
+        messageText,
+        waMeUrl,
+        error: 'Identical message was already sent to this number in the last 60 seconds.',
+      });
+      continue;
+    }
+
     const dispatched = await sendSingleWhatsAppMessage(normalized, messageText);
+
+    if (dispatched.status !== 'failed') {
+      recentCampaignDispatches.set(cacheKey, now + DUPLICATE_GUARD_TTL_MS);
+    }
 
     await saveNotificationLogEntry({
       registrationId: r.registrationId || null,
@@ -461,15 +652,57 @@ export async function dispatchConsentBasedCampaignMessages(params: {
       errorMessage: dispatched.errorMessage,
     });
 
+    summary.processed++;
+    if (dispatched.status === 'sent') summary.sentCount++;
+    else if (dispatched.status === 'queued_unconfigured') summary.directReadyCount++;
+    else if (dispatched.status === 'failed') summary.failedCount++;
+
     results.push({
-      fullName: r.fullName,
+      fullName: cleanName,
       recipient: normalized,
       status: dispatched.status,
       messageText,
-      waMeUrl: `https://wa.me/${normalized}?text=${encodeURIComponent(messageText)}`,
+      waMeUrl,
+      providerMessageId: dispatched.providerMessageId,
       error: dispatched.errorMessage,
     });
   }
 
-  return results;
+  return { results, summary };
+}
+
+export async function retryWhatsAppNotificationLog(
+  log: NotificationLogRecord
+): Promise<{
+  status: DeliveryStatus;
+  providerMessageId?: string;
+  error?: string;
+  waMeUrl: string;
+}> {
+  const normalized = normalizeWhatsAppNumber(log.recipient_whatsapp);
+  const dispatched = await sendSingleWhatsAppMessage(normalized, log.message_preview);
+
+  await saveNotificationLogEntry({
+    existingId: log.id,
+    registrationId: log.registration_id,
+    adminId: log.admin_id,
+    recipientWhatsapp: normalized || log.recipient_whatsapp,
+    language: log.language || 'en',
+    messageType: log.message_type || 'custom',
+    messagePreview: log.message_preview,
+    providerMessageId: dispatched.providerMessageId,
+    deliveryStatus: dispatched.status,
+    errorMessage: dispatched.errorMessage,
+  });
+
+  const waMeUrl = isValidWhatsAppNumber(normalized)
+    ? `https://wa.me/${normalized}?text=${encodeURIComponent(log.message_preview)}`
+    : '';
+
+  return {
+    status: dispatched.status,
+    providerMessageId: dispatched.providerMessageId,
+    error: dispatched.errorMessage,
+    waMeUrl,
+  };
 }
